@@ -22,7 +22,7 @@ station_user=birdrefresh
 station_home=$test_root/home
 repo=$station_home/BirdNET-Pi
 webroot=$station_home/BirdSongs/Extracted
-official=https://github.com/Twarner491/AvianVisitors.git
+official=https://github.com/tadeongmi/AvianVisitors.git
 official_remote=$test_root/official.git
 rm -rf "$test_root"
 mkdir -p "$repo/scripts" "$repo/avian/frontend/fonts" "$repo/avian/frontend/assets" \

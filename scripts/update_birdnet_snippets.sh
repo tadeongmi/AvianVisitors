@@ -15,7 +15,7 @@ repo_dir=$(cd -- "$script_dir/.." && pwd -P)
 
 origin=$(git -C "$repo_dir" config --get remote.origin.url)
 case "$origin" in
-  https://github.com/Twarner491/AvianVisitors|https://github.com/Twarner491/AvianVisitors.git) ;;
+  https://github.com/tadeongmi/AvianVisitors|https://github.com/tadeongmi/AvianVisitors.git) ;;
   *) echo "Refusing update from an unexpected origin" >&2; exit 1 ;;
 esac
 
