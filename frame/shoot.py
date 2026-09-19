@@ -186,7 +186,15 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
     auth = "Basic " + base64.b64encode(f"{user}:{password or ''}".encode()).decode() if user else None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--force-color-profile=srgb", "--disable-dev-shm-usage"])
+        # Playwright ships no Chromium build for some ARM64 distributions, and
+        # `playwright install-deps` does not know every Debian release. Where
+        # that is the case, point AVIAN_CHROMIUM at the distro's own browser
+        # (e.g. /usr/bin/chromium) and Playwright will drive that instead.
+        launch_kw = {"args": ["--force-color-profile=srgb", "--disable-dev-shm-usage"]}
+        chromium_path = os.environ.get("AVIAN_CHROMIUM")
+        if chromium_path:
+            launch_kw["executable_path"] = chromium_path
+        browser = p.chromium.launch(**launch_kw)
         try:
             ctx_kw = {
                 "viewport": {"width": vw, "height": vh},

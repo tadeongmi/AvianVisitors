@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Wall display for browsers far older than the collage itself.
+     The Pi renders the real site with headless Chromium (shoot.py); this page
+     only ever shows the resulting PNG. Deliberately ES5 and pre-2017 CSS: it
+     targets Safari 10 on an iPad 4, which silently drops clamp(), inset:,
+     dvh, aspect-ratio and flex gap -- everything the collage stylesheets use.
+     Keep it that way. No const/let, no arrow functions, no fetch, no
+     object-fit, no CSS custom properties. -->
+<title>Avian Visitors</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Avian Visitors">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #efece0;          /* --paper, matched to the collage ground */
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  #stage {
+    position: absolute;
+    top: 0; right: 0; bottom: 0; left: 0;   /* not inset: -- Safari 14.1+ */
+    background-color: #efece0;
+    background-repeat: no-repeat;
+    background-position: 50% 50%;
+    -webkit-background-size: contain;        /* iOS 4-ish prefix, harmless */
+    background-size: contain;
+  }
+  /* A quiet corner dot, only while the shot is stale. No animation on e-ink-ish
+     panels and no layout impact. */
+  #stale {
+    position: absolute;
+    top: 10px; right: 10px;
+    width: 8px; height: 8px;
+    background: #b4441f;
+    border-radius: 50%;
+    opacity: 0;
+    -webkit-transition: opacity .6s linear;
+    transition: opacity .6s linear;
+  }
+  #stale.on { opacity: .85; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="stale"></div>
+<script>
+(function () {
+  'use strict';
+
+  function param(name, fallback) {
+    var m = new RegExp('[?&]' + name + '=([^&#]*)').exec(window.location.search);
+    return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : fallback;
+  }
+
+  var SRC     = param('src', 'frame.png');
+  var PERIOD  = Math.max(15, parseInt(param('period', '120'), 10) || 120) * 1000;
+  var stage   = document.getElementById('stage');
+  var staleEl = document.getElementById('stale');
+
+  var timer = null;
+  var misses = 0;
+  var lastShown = '';
+
+  function setStale(on) {
+    staleEl.className = on ? 'on' : '';
+  }
+
+  function schedule(ms) {
+    if (timer) { window.clearTimeout(timer); }
+    timer = window.setTimeout(tick, ms || PERIOD);
+  }
+
+  function tick() {
+    var url = SRC + (SRC.indexOf('?') === -1 ? '?' : '&') + 't=' +
+              new Date().getTime();
+    var img = new Image();
+
+    img.onload = function () {
+      // Only repaint when the bytes actually changed, so an unchanged frame
+      // costs no decode and no flash on a slow panel.
+      if (img.src !== lastShown) {
+        stage.style.backgroundImage = 'url("' + img.src + '")';
+        lastShown = img.src;
+      }
+      misses = 0;
+      setStale(false);
+      img.onload = img.onerror = null;
+      schedule(PERIOD);
+    };
+
+    img.onerror = function () {
+      misses++;
+      // Show the dot only once it is properly stale, not on a single blip.
+      if (misses >= 3) { setStale(true); }
+      img.onload = img.onerror = null;
+      // Back off to at most 5 minutes so a rebooting Pi is not hammered.
+      schedule(Math.min(PERIOD * misses, 300000));
+    };
+
+    img.src = url;
+  }
+
+  // Tap anywhere to force a refresh -- handy when walking past the frame.
+  function forceRefresh() { misses = 0; schedule(1); }
+  if ('ontouchend' in window) {
+    document.addEventListener('touchend', forceRefresh, false);
+  } else {
+    document.addEventListener('click', forceRefresh, false);
+  }
+
+  // iOS 10 has no Page Visibility support worth relying on, but when it does
+  // fire, catching up immediately beats waiting out the interval.
+  if (typeof document.hidden !== 'undefined') {
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) { forceRefresh(); }
+    }, false);
+  }
+
+  tick();
+}());
+</script>
+</body>
+</html>
