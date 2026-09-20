@@ -302,7 +302,12 @@ def fetch_wikipedia_thumb(sci: str, com: str) -> tuple[bytes, str] | None:
         # Prefer originalimage (higher res) over thumbnail.
         for k in ("originalimage", "thumbnail"):
             src = (meta.get(k) or {}).get("source")
-            if not src or not src.lower().endswith((".jpg", ".jpeg", ".png")):
+            # Wikipedia's REST summary now appends UTM tracking params to
+            # image URLs (".jpg?utm_source=..."), so an endswith() test on the
+            # whole URL never matches and every reference is silently
+            # skipped. Test the path component only.
+            src_path = urllib.parse.urlsplit(src).path if src else ""
+            if not src or not src_path.lower().endswith((".jpg", ".jpeg", ".png")):
                 continue
             try:
                 req2 = urllib.request.Request(src, headers={"User-Agent": USER_AGENT})
