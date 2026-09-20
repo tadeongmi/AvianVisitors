@@ -59,3 +59,24 @@ Playwright does not ship a Chromium build for every ARM64 distribution, and
 tries the bundled browser, verifies it actually launches, and otherwise installs
 the distro's `chromium` and sets `AVIAN_CHROMIUM`, which `shoot.py` passes to
 Playwright as `executable_path`.
+
+## Species names
+
+`shoot.py` can label each bird with its common name (`--bird-names`, which asks
+the page for `labels=1`). The e-ink frame exposes this as a toggle rather than a
+flag you have to remember, and the kiosk does the same:
+
+```bash
+KIOSK_BIRD_NAMES=1 bash ~/BirdNET-Pi/avian/kiosk/install-kiosk.sh
+```
+
+On an existing install, edit `KIOSK_BIRD_NAMES` in `/etc/avian-kiosk.conf` and
+re-render:
+
+```bash
+sudo systemctl start avian-kiosk.service
+```
+
+Accepts `1`, `true`, `yes` or `on`; anything else leaves the names off. Worth
+turning on for a wall frame people walk past and ask about, and off if you want
+the collage to read as a picture rather than a chart.

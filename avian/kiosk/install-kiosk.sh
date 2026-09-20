@@ -21,6 +21,7 @@ KIOSK_URL=${KIOSK_URL:-http://127.0.0.1/}
 KIOSK_INTERVAL=${KIOSK_INTERVAL:-10min}
 KIOSK_TITLE=${KIOSK_TITLE:-}
 KIOSK_SUBTITLE=${KIOSK_SUBTITLE:-}
+KIOSK_BIRD_NAMES=${KIOSK_BIRD_NAMES:-0}
 
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -84,6 +85,8 @@ KIOSK_HEIGHT=$KIOSK_HEIGHT
 KIOSK_DSF=$KIOSK_DSF
 KIOSK_TITLE=$KIOSK_TITLE
 KIOSK_SUBTITLE=$KIOSK_SUBTITLE
+# Show common species names beside each bird (1 = on, 0 = off).
+KIOSK_BIRD_NAMES=$KIOSK_BIRD_NAMES
 $CHROMIUM_ENV
 CONFEOF
 sudo chmod 0644 "$CONF"
@@ -105,6 +108,7 @@ args=(--url "\$KIOSK_URL" --out "\$tmp"
       --width "\$KIOSK_WIDTH" --height "\$KIOSK_HEIGHT" --dsf "\$KIOSK_DSF")
 [ -n "\${KIOSK_TITLE:-}" ] && args+=(--title "\$KIOSK_TITLE")
 [ -n "\${KIOSK_SUBTITLE:-}" ] && args+=(--subtitle "\$KIOSK_SUBTITLE")
+case "\${KIOSK_BIRD_NAMES:-0}" in 1|true|yes|on) args+=(--bird-names) ;; esac
 cd "$FRAME_DIR"
 "$VENV/bin/python" "$FRAME_DIR/shoot.py" "\${args[@]}"
 chmod 0644 "\$tmp"
