@@ -80,3 +80,26 @@ sudo systemctl start avian-kiosk.service
 Accepts `1`, `true`, `yes` or `on`; anything else leaves the names off. Worth
 turning on for a wall frame people walk past and ask about, and off if you want
 the collage to read as a picture rather than a chart.
+
+## Flaky renders
+
+With `KIOSK_BIRD_NAMES=1`, `shoot.py` occasionally aborts with:
+
+```
+shoot failed: frame labels missing for: <species>
+```
+
+It checks that every collage tile carries a rendered label, and sometimes
+one is absent. An identical re-run succeeds, and the species involved has
+complete `dims.json` / `masks.json` entries and both illustration poses, so
+it is not missing data. I could not characterise it further: the same page
+loaded outside `shoot.py` always has every label, but `shoot.py` injects CSS
+and rewrites the layout tunables, so that is not a like-for-like comparison.
+
+Since the render is timer-driven, one flaky attempt would leave a stale PNG
+on the wall for the whole interval. `avian-kiosk-shot` therefore retries up
+to three times, five seconds apart, before giving up. Retries are logged:
+
+```bash
+journalctl -u avian-kiosk.service | grep retrying
+```

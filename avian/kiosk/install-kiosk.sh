@@ -110,7 +110,21 @@ args=(--url "\$KIOSK_URL" --out "\$tmp"
 [ -n "\${KIOSK_SUBTITLE:-}" ] && args+=(--subtitle "\$KIOSK_SUBTITLE")
 case "\${KIOSK_BIRD_NAMES:-0}" in 1|true|yes|on) args+=(--bird-names) ;; esac
 cd "$FRAME_DIR"
-"$VENV/bin/python" "$FRAME_DIR/shoot.py" "\${args[@]}"
+# shoot.py intermittently fails with "frame labels missing for: <species>"
+# when --bird-names is on. The cause is upstream and not understood here;
+# an identical re-run succeeds. On a timer-driven wall display a single
+# flaky render would leave a stale PNG up for the whole interval, so retry
+# rather than give up.
+attempt=1
+until "$VENV/bin/python" "$FRAME_DIR/shoot.py" "\${args[@]}"; do
+  if [ "\$attempt" -ge 3 ]; then
+    echo "render failed after \$attempt attempts" >&2
+    exit 1
+  fi
+  echo "render attempt \$attempt failed; retrying" >&2
+  attempt=\$((attempt + 1))
+  sleep 5
+done
 chmod 0644 "\$tmp"
 mv -f "\$tmp" "\$out"
 trap - EXIT
