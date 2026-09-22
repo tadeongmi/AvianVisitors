@@ -115,7 +115,15 @@ function restore_file(string $path, bool $existed, string $contents): bool {
 }
 
 function find_executable(string $name): ?string {
-    foreach (explode(PATH_SEPARATOR, (string)getenv('PATH')) as $directory) {
+    // PHP-FPM pools default to clear_env = yes, and the stock www.conf ships
+    // env[PATH] commented out, so getenv('PATH') is empty under FPM. Without
+    // a fallback nohup is never found and the caller reports "generator
+    // unavailable", which points nowhere useful.
+    $path = (string)getenv('PATH');
+    $directories = $path !== ''
+        ? explode(PATH_SEPARATOR, $path)
+        : ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'];
+    foreach ($directories as $directory) {
         if ($directory === '' || $directory[0] !== DIRECTORY_SEPARATOR) continue;
         $candidate = rtrim($directory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
         if (is_file($candidate) && is_executable($candidate)) return $candidate;
