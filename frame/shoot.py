@@ -85,11 +85,12 @@ def _frame_url(url, bird_names):
     return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
 
 
-def _make_api_handler(floor_frac, window_hours, auth, species=None):
+def _make_api_handler(floor_frac, window_hours, auth, species=None, seen=None):
     """Re-window action=recent (to preview busy days) and floor the rarest
     counts so the packer draws them a little larger. With `species` set
     (--bird-weather), serve that list for recent and an empty body for the
-    other views, which have no backend in that mode."""
+    other views, which have no backend in that mode. `seen`, when given,
+    receives the recent payload as the API sent it, before the floor."""
     def handler(route):
         req = route.request
         if "action=recent" not in req.url:
@@ -105,6 +106,8 @@ def _make_api_handler(floor_frac, window_hours, auth, species=None):
                 if auth:
                     kw["headers"] = {**req.headers, "authorization": auth}
                 data = route.fetch(**kw).json()
+            if seen is not None:
+                seen["recent"] = json.loads(json.dumps(data))
             sp = data.get("species", [])
             if sp and floor_frac > 0:
                 floor = max((s.get("n") or 1) for s in sp) * floor_frac
@@ -131,6 +134,72 @@ def _serve_frontend(directory):
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, httpd.server_address[1]
+
+
+# Where each bird landed in the frame, for a panel that wants to make the
+# picture tappable (the kiosk). Every box is in fractions of the frame so the
+# panel can map it onto however it scaled the PNG. `grid` is the cutout's alpha
+# sampled at HOTSPOT_GRID x HOTSPOT_GRID, row-major, "1" where there is bird:
+# tile rectangles overlap, so a tap has to land on a silhouette to count.
+HOTSPOT_GRID = 24
+HOTSPOT_JS = """(n) => {
+  const vw = innerWidth, vh = innerHeight;
+  const frac = r => [r.left / vw, r.top / vh, r.width / vw, r.height / vh].map(v => +v.toFixed(5));
+  return [...document.querySelectorAll('.gtile')].map(t => {
+    const img = t.querySelector('img');
+    let grid = '';
+    if (img && img.naturalWidth) {
+      const c = document.createElement('canvas');
+      c.width = c.height = n;
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0, n, n);
+      try {
+        const d = g.getImageData(0, 0, n, n).data;
+        for (let i = 3; i < d.length; i += 4) grid += d[i] > 64 ? '1' : '0';
+      } catch (e) { grid = ''; }
+    }
+    // The svg is sized to the lettering, but the text inside is rotated
+    // along the bird, so the rendered glyph boxes are the tighter target.
+    let label = null;
+    for (const e of t.querySelectorAll('.gtile-label text')) {
+      const r = e.getBoundingClientRect();
+      if (!r.width) continue;
+      label = label ? {
+        left: Math.min(label.left, r.left), top: Math.min(label.top, r.top),
+        right: Math.max(label.right, r.right), bottom: Math.max(label.bottom, r.bottom),
+      } : {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+    }
+    if (label) { label.width = label.right - label.left; label.height = label.bottom - label.top; }
+    // Path and query only: the panel fetches it from the station, not from
+    // whatever host this render happened to load.
+    const src = img && img.src ? new URL(img.src) : null;
+    return {
+      sci: t.getAttribute('data-sci') || '',
+      com: t.getAttribute('aria-label') || '',
+      img: src ? src.pathname + src.search : null,
+      box: frac(t.getBoundingClientRect()),
+      grid: grid,
+      label: label ? frac(label) : null,
+    };
+  });
+}"""
+
+
+def _hotspots(page, vw, vh, recent):
+    """Describe the rendered tiles plus the recent-window facts for each."""
+    tiles = page.evaluate(HOTSPOT_JS, HOTSPOT_GRID)
+    by_sci = {s.get("sci"): s for s in (recent or {}).get("species", [])}
+    for t in tiles:
+        s = by_sci.get(t["sci"]) or {}
+        t["n"] = s.get("n")
+        t["last_seen"] = s.get("last_seen")
+        t["detection_id"] = s.get("detection_id")
+    return {
+        "width": vw, "height": vh, "grid": HOTSPOT_GRID,
+        "hours": (recent or {}).get("hours"),
+        "as_of": (recent or {}).get("as_of"),
+        "tiles": tiles,
+    }
 
 
 def _make_cutout_handler(base, local_dir=None):
@@ -181,7 +250,8 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
           mat=0.04, collage_vh=52, cluster_xbias=1.0, cluster_ybias=1.2,
           count_exp=0.4, cluster_pad=1, label_min_px=11, small_floor=0.04, window_hours=None,
           timeout_ms=45000, user=None, password=None, species=None, cutout_base=None,
-          cutout_local=None, empty_text="listening for birds…", bird_names=False):
+          cutout_local=None, empty_text="listening for birds…", bird_names=False,
+          hotspots=None):
     pad_side, pad_top, pad_bottom = int(vw * mat), int(vh * mat * 0.92), int(vh * mat)
     auth = "Basic " + base64.b64encode(f"{user}:{password or ''}".encode()).decode() if user else None
 
@@ -205,7 +275,8 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
                 ctx_kw["http_credentials"] = {"username": user, "password": password or ""}
             page = browser.new_context(**ctx_kw).new_page()
             misses = []
-            page.route("**/birdnet-api.php**", _make_api_handler(small_floor, window_hours, auth, species))
+            seen = {}
+            page.route("**/birdnet-api.php**", _make_api_handler(small_floor, window_hours, auth, species, seen))
             page.route("**/apt.js*", _make_js_handler(
                 cluster_xbias, cluster_ybias, count_exp, cluster_pad,
                 label_min_px, auth, misses))
@@ -285,6 +356,9 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
             page.wait_for_timeout(250)
             # clip is CSS px; device_scale_factor scales the PNG to vw*dsf by vh*dsf = 1200x1600
             page.screenshot(path=out, clip={"x": 0, "y": 0, "width": vw, "height": vh})
+            if hotspots:
+                with open(hotspots, "w", encoding="utf-8") as f:
+                    json.dump(_hotspots(page, vw, vh, seen.get("recent")), f, separators=(",", ":"))
         finally:
             browser.close()
     return out
@@ -350,6 +424,8 @@ def main():
     ap.add_argument("--password")
     ap.add_argument("--bird-names", action="store_true",
                     help="show common names along the birds")
+    ap.add_argument("--hotspots", metavar="JSON",
+                    help="also write where each bird landed (for a tappable panel)")
     ap.add_argument("--timeout", type=int, default=45000)
     a = ap.parse_args()
     if (a.zip or a.station_id) and not a.bird_weather:
@@ -398,7 +474,7 @@ def main():
               cluster_ybias=a.cluster_ybias, count_exp=count_exp, cluster_pad=a.cluster_pad,
               small_floor=a.small_floor,
               window_hours=a.window_hours, timeout_ms=a.timeout, user=a.user, password=a.password,
-              bird_names=a.bird_names)
+              bird_names=a.bird_names, hotspots=a.hotspots)
     except Exception as e:
         print(f"shoot failed: {e}", file=sys.stderr)
         sys.exit(1)

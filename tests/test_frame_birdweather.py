@@ -217,6 +217,35 @@ class FrameShootTests(unittest.TestCase):
         self.assertEqual((calls[1]["title"], calls[1]["subtitle"]),
                          ("Avian Visitors", "Heard Today"))
 
+    def test_hotspots_carry_the_unfloored_recent_numbers(self):
+        # The API handler floors rare counts so the packer draws them larger;
+        # the kiosk card must still show what was actually heard.
+        recent = {"hours": 24, "as_of": "2026-10-14T04:47:48+00:00", "species": [
+            {"sci": "Turdus rufiventris", "n": 244, "last_seen": "2026-10-13 14:23:21",
+             "detection_id": 9050},
+            {"sci": "Milvago chimango", "n": 1, "last_seen": "2026-10-13 12:50:12",
+             "detection_id": 9153},
+        ]}
+        seen = {}
+        route = mock.Mock()
+        route.request.url = "http://127.0.0.1/avian/api/birdnet-api.php?action=recent&hours=24"
+        route.fetch.return_value.json.return_value = recent
+        self.shoot._make_api_handler(0.04, None, None, seen=seen)(route)
+        served = json.loads(route.fulfill.call_args.kwargs["body"])
+        self.assertEqual(served["species"][1]["n"], 10)
+
+        page = mock.Mock()
+        page.evaluate.return_value = [
+            {"sci": "Milvago chimango", "com": "Caracara chimango", "box": [0.6, 0.4, 0.1, 0.2],
+             "grid": "", "label": None, "img": "/avian/api/cutout.php?sci=Milvago+chimango"},
+            {"sci": "Unknown", "com": "", "box": [0, 0, 0, 0], "grid": "", "label": None, "img": None},
+        ]
+        spots = self.shoot._hotspots(page, 1024, 768, seen["recent"])
+        self.assertEqual((spots["width"], spots["height"], spots["hours"]), (1024, 768, 24))
+        self.assertEqual(spots["as_of"], recent["as_of"])
+        self.assertEqual((spots["tiles"][0]["n"], spots["tiles"][0]["detection_id"]), (1, 9153))
+        self.assertIsNone(spots["tiles"][1]["n"])
+
 
 class FrameGeneratorTests(unittest.TestCase):
     @classmethod
