@@ -13,12 +13,17 @@ KIOSK_SRC=$STATION_DIR/avian/kiosk
 VENV=${VENV:-$STATION_DIR/frame/.venv-kiosk}
 CONF=/etc/avian-kiosk.conf
 
-# iPad 4 portrait is 768x1024 CSS px at 2x -> a 1536x2048 PNG, pixel-exact.
-KIOSK_WIDTH=${KIOSK_WIDTH:-768}
-KIOSK_HEIGHT=${KIOSK_HEIGHT:-1024}
+# iPad 4 landscape is 1024x768 CSS px at 2x -> a 2048x1536 PNG, pixel-exact.
+# For a portrait panel, swap them (768x1024).
+KIOSK_WIDTH=${KIOSK_WIDTH:-1024}
+KIOSK_HEIGHT=${KIOSK_HEIGHT:-768}
 KIOSK_DSF=${KIOSK_DSF:-2}
 KIOSK_URL=${KIOSK_URL:-http://127.0.0.1/}
-KIOSK_INTERVAL=${KIOSK_INTERVAL:-10min}
+# How often to look for new detections, and the longest a frame may stand
+# without any (the recent window still rolls birds off on its own).
+KIOSK_INTERVAL=${KIOSK_INTERVAL:-2min}
+KIOSK_MAX_AGE=${KIOSK_MAX_AGE:-600}
+KIOSK_SHOOT_ARGS=${KIOSK_SHOOT_ARGS:-}
 KIOSK_TITLE=${KIOSK_TITLE:-}
 KIOSK_SUBTITLE=${KIOSK_SUBTITLE:-}
 KIOSK_BIRD_NAMES=${KIOSK_BIRD_NAMES:-0}
@@ -87,6 +92,10 @@ KIOSK_TITLE=$KIOSK_TITLE
 KIOSK_SUBTITLE=$KIOSK_SUBTITLE
 # Show common species names beside each bird (1 = on, 0 = off).
 KIOSK_BIRD_NAMES=$KIOSK_BIRD_NAMES
+# Re-render at least this often (seconds) even with no new detections.
+KIOSK_MAX_AGE=$KIOSK_MAX_AGE
+# Extra shoot.py flags, after the defaults so they win (e.g. --collage-vh 70).
+KIOSK_SHOOT_ARGS="$KIOSK_SHOOT_ARGS"
 $CHROMIUM_ENV
 CONFEOF
 sudo chmod 0644 "$CONF"
@@ -94,21 +103,43 @@ sudo chmod 0644 "$CONF"
 say "Installing the render helper"
 sudo tee /usr/local/bin/avian-kiosk-shot >/dev/null <<HELPEOF
 #!/usr/bin/env bash
-# Render the collage to a PNG and swap it into the webroot atomically, so the
+# Render the collage to a PNG, plus frame.json saying where each bird landed
+# (the panel's tap targets), and swap both into the webroot atomically, so the
 # panel never fetches a half-written file.
 set -euo pipefail
 : "\${KIOSK_URL:=http://127.0.0.1/}"
-: "\${KIOSK_WIDTH:=768}"
-: "\${KIOSK_HEIGHT:=1024}"
+: "\${KIOSK_WIDTH:=1024}"
+: "\${KIOSK_HEIGHT:=768}"
 : "\${KIOSK_DSF:=2}"
-out=$WEBROOT/kiosk/frame.png
-tmp=\$(mktemp "$WEBROOT/kiosk/.frame.XXXXXX.png")
-trap 'rm -f "\$tmp"' EXIT
-args=(--url "\$KIOSK_URL" --out "\$tmp"
+: "\${KIOSK_MAX_AGE:=600}"
+dir=$WEBROOT/kiosk
+out=\$dir/frame.png
+map=\$dir/frame.json
+# The timer fires every few minutes; only render when there is something new:
+# a detection (the database changed), a settings edit, or a frame past
+# KIOSK_MAX_AGE. Delete .rendered-for (or set KIOSK_FORCE=1) to render regardless.
+stamp_file=\$dir/.rendered-for
+stamp="\$(stat -c %Y "$STATION_DIR/scripts/birds.db" 2>/dev/null || echo 0) \$(stat -c %Y "$CONF" 2>/dev/null || echo 0)"
+if [ "\${KIOSK_FORCE:-0}" != 1 ] && [ -s "\$out" ] && [ -s "\$map" ] \
+   && [ "\$(cat "\$stamp_file" 2>/dev/null)" = "\$stamp" ] \
+   && [ \$(( \$(date +%s) - \$(stat -c %Y "\$out") )) -lt "\$KIOSK_MAX_AGE" ]; then
+  exit 0
+fi
+tmp=\$(mktemp "\$dir/.frame.XXXXXX.png")
+tmpmap=\$(mktemp "\$dir/.frame.XXXXXX.json")
+trap 'rm -f "\$tmp" "\$tmpmap"' EXIT
+args=(--url "\$KIOSK_URL" --out "\$tmp" --hotspots "\$tmpmap"
       --width "\$KIOSK_WIDTH" --height "\$KIOSK_HEIGHT" --dsf "\$KIOSK_DSF")
+# shoot.py's defaults are tuned for a portrait frame. On a landscape panel,
+# give the collage more of the height and let the cluster spread sideways.
+if [ "\$KIOSK_WIDTH" -gt "\$KIOSK_HEIGHT" ]; then
+  args+=(--collage-vh 74 --cluster-xbias 1.5 --cluster-ybias 0.9 --mat 0.03)
+fi
 [ -n "\${KIOSK_TITLE:-}" ] && args+=(--title "\$KIOSK_TITLE")
 [ -n "\${KIOSK_SUBTITLE:-}" ] && args+=(--subtitle "\$KIOSK_SUBTITLE")
 case "\${KIOSK_BIRD_NAMES:-0}" in 1|true|yes|on) args+=(--bird-names) ;; esac
+# shellcheck disable=SC2206  # word-split on purpose: a list of flags
+[ -n "\${KIOSK_SHOOT_ARGS:-}" ] && args+=(\$KIOSK_SHOOT_ARGS)
 cd "$FRAME_DIR"
 # shoot.py intermittently fails with "frame labels missing for: <species>"
 # when --bird-names is on. The cause is upstream and not understood here;
@@ -125,8 +156,11 @@ until "$VENV/bin/python" "$FRAME_DIR/shoot.py" "\${args[@]}"; do
   attempt=\$((attempt + 1))
   sleep 5
 done
-chmod 0644 "\$tmp"
+chmod 0644 "\$tmp" "\$tmpmap"
+# PNG first: the panel polls frame.json and then fetches the PNG it describes.
 mv -f "\$tmp" "\$out"
+mv -f "\$tmpmap" "\$map"
+echo "\$stamp" > "\$stamp_file"
 trap - EXIT
 HELPEOF
 sudo chmod 0755 /usr/local/bin/avian-kiosk-shot

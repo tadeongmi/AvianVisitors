@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <!-- Wall display for browsers far older than the collage itself.
-     The Pi renders the real site with headless Chromium (shoot.py); this page
-     only ever shows the resulting PNG. Deliberately ES5 and pre-2017 CSS: it
+     The station renders the real site with headless Chromium (shoot.py); this
+     page shows the resulting PNG, and frame.json says where each bird landed
+     so a tap on one opens its card. Deliberately ES5 and pre-2017 CSS: it
      targets Safari 10 on an iPad 4, which silently drops clamp(), inset:,
      dvh, aspect-ratio and flex gap -- everything the collage stylesheets use.
      Keep it that way. No const/let, no arrow functions, no fetch, no
@@ -24,6 +25,7 @@
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
   }
   #stage {
     position: absolute;
@@ -47,11 +49,153 @@
     transition: opacity .6s linear;
   }
   #stale.on { opacity: .85; }
+
+  /* Brief ring where a tap landed on a bird, so the panel feels like it heard. */
+  #ping {
+    position: absolute;
+    width: 56px; height: 56px;
+    margin: -28px 0 0 -28px;
+    border: 2px solid #1a1612;
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #ping.on {
+    -webkit-animation: ping .45s ease-out;
+    animation: ping .45s ease-out;
+  }
+  @-webkit-keyframes ping {
+    from { opacity: .5; -webkit-transform: scale(.4); }
+    to   { opacity: 0;  -webkit-transform: scale(1.2); }
+  }
+  @keyframes ping {
+    from { opacity: .5; transform: scale(.4); }
+    to   { opacity: 0;  transform: scale(1.2); }
+  }
+
+  /* The species card. Absolutely positioned and sized in px from script,
+     because Safari 10 has no flex gap and no viewport-relative clamp(). */
+  #veil {
+    position: absolute;
+    top: 0; right: 0; bottom: 0; left: 0;
+    background: rgba(239, 236, 224, .82);
+    display: none;
+  }
+  #veil.on { display: block; }
+  #card {
+    position: absolute;
+    background: #fbfaf5;
+    border: 1px solid #d8d2bf;
+    border-radius: 6px;
+    -webkit-box-shadow: 0 10px 40px rgba(26, 22, 18, .18);
+    box-shadow: 0 10px 40px rgba(26, 22, 18, .18);
+    color: #1a1612;
+    font-family: Georgia, "Times New Roman", serif;
+    overflow: hidden;
+  }
+  #card .pic {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    background-color: #f3f0e4;
+    background-repeat: no-repeat;
+    background-position: 50% 50%;
+    -webkit-background-size: contain;
+    background-size: contain;
+    border-right: 1px solid #e4dfcf;
+  }
+  #card .txt {
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    padding: 28px 30px 24px;
+    -webkit-box-sizing: border-box;
+    box-sizing: border-box;
+  }
+  #card .x {
+    position: absolute;
+    top: 6px; right: 8px;
+    width: 44px; height: 44px;
+    line-height: 44px;
+    text-align: center;
+    font-size: 30px;
+    color: #6d6556;
+  }
+  #card h2 {
+    margin: 0 40px 2px 0;
+    font-size: 34px;
+    font-weight: normal;
+    line-height: 1.1;
+  }
+  #card .sci {
+    margin: 0 0 18px;
+    font-style: italic;
+    font-size: 18px;
+    color: #6d6556;
+  }
+  #card .fact {
+    margin: 0 0 6px;
+    font-size: 19px;
+    line-height: 1.35;
+  }
+  #card .fact b { font-weight: bold; }
+  #card .spec {
+    margin: 18px 0 0;
+    height: 92px;
+    background-color: #1a1612;
+    background-repeat: no-repeat;
+    background-position: 0 50%;
+    -webkit-background-size: 100% 100%;
+    background-size: 100% 100%;
+    border-radius: 3px;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Playhead across the spectrogram while the clip plays. */
+  #card .head {
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    width: 2px;
+    background: #f6e7a8;
+    display: none;
+  }
+  #card .play {
+    display: inline-block;
+    margin: 14px 0 0;
+    padding: 0 22px;
+    height: 48px;
+    line-height: 48px;
+    border-radius: 24px;
+    background: #1a1612;
+    color: #fbfaf5;
+    font-size: 18px;
+    font-family: Georgia, "Times New Roman", serif;
+  }
+  #card .play.off { background: #b9b2a0; }
+  #card .note {
+    display: inline-block;
+    margin: 14px 0 0 14px;
+    font-size: 15px;
+    color: #6d6556;
+  }
 </style>
 </head>
 <body>
   <div id="stage"></div>
+  <div id="ping"></div>
   <div id="stale"></div>
+  <div id="veil">
+    <div id="card">
+      <div class="pic"></div>
+      <div class="txt">
+        <h2></h2>
+        <p class="sci"></p>
+        <p class="fact" data-k="count"></p>
+        <p class="fact" data-k="last"></p>
+        <div class="spec"><div class="head"></div></div>
+        <div class="play">&#9654;&ensp;Play best call</div><span class="note"></span>
+      </div>
+      <div class="x">&times;</div>
+    </div>
+  </div>
 <script>
 (function () {
   'use strict';
@@ -60,15 +204,30 @@
     var m = new RegExp('[?&]' + name + '=([^&#]*)').exec(window.location.search);
     return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : fallback;
   }
+  function $(sel, root) { return (root || document).querySelector(sel); }
+  function bust(url, v) {
+    return url + (url.indexOf('?') === -1 ? '?' : '&') + v;
+  }
 
   var SRC     = param('src', 'frame.png');
-  var PERIOD  = Math.max(15, parseInt(param('period', '120'), 10) || 120) * 1000;
-  var stage   = document.getElementById('stage');
-  var staleEl = document.getElementById('stale');
+  var MAP     = param('map', SRC.replace(/\.png(\?.*)?$/, '.json'));
+  // The station's API sits one level up from /kiosk/.
+  var API     = param('api', '../avian/api/');
+  var PERIOD  = Math.max(15, parseInt(param('period', '60'), 10) || 60) * 1000;
+  // A card left open on a wall panel should not stay up all day.
+  var CARD_MS = 90000;
+  var stage   = $('#stage');
+  var staleEl = $('#stale');
+  var ping    = $('#ping');
+  var veil    = $('#veil');
+  var card    = $('#card');
 
   var timer = null;
   var misses = 0;
-  var lastShown = '';
+  var shownStamp = '';
+  // frame.json for the PNG on screen; null until one loads, and on stations
+  // whose render helper predates it (the panel then just shows the picture).
+  var map = null;
 
   function setStale(on) {
     staleEl.className = on ? 'on' : '';
@@ -79,43 +238,328 @@
     timer = window.setTimeout(tick, ms || PERIOD);
   }
 
-  function tick() {
-    var url = SRC + (SRC.indexOf('?') === -1 ? '?' : '&') + 't=' +
-              new Date().getTime();
-    var img = new Image();
-
-    img.onload = function () {
-      // Only repaint when the bytes actually changed, so an unchanged frame
-      // costs no decode and no flash on a slow panel.
-      if (img.src !== lastShown) {
-        stage.style.backgroundImage = 'url("' + img.src + '")';
-        lastShown = img.src;
+  function getJSON(url, done) {
+    var x = new XMLHttpRequest();
+    x.open('GET', url, true);
+    x.timeout = 15000;
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) { return; }
+      var data = null;
+      if (x.status === 200) {
+        try { data = JSON.parse(x.responseText); } catch (e) { data = null; }
       }
+      x.onreadystatechange = null;
+      done(data);
+    };
+    x.send();
+  }
+
+  function failed() {
+    misses++;
+    // Show the dot only once it is properly stale, not on a single blip.
+    if (misses >= 3) { setStale(true); }
+    // Back off to at most 5 minutes so a rebooting station is not hammered.
+    schedule(Math.min(PERIOD * misses, 300000));
+  }
+
+  function show(url, stamp, nextMap) {
+    var img = new Image();
+    img.onload = function () {
+      stage.style.backgroundImage = 'url("' + url + '")';
+      shownStamp = stamp;
+      map = nextMap;
       misses = 0;
       setStale(false);
       img.onload = img.onerror = null;
       schedule(PERIOD);
     };
-
     img.onerror = function () {
-      misses++;
-      // Show the dot only once it is properly stale, not on a single blip.
-      if (misses >= 3) { setStale(true); }
       img.onload = img.onerror = null;
-      // Back off to at most 5 minutes so a rebooting Pi is not hammered.
-      schedule(Math.min(PERIOD * misses, 300000));
+      failed();
     };
-
     img.src = url;
   }
 
-  // Tap anywhere to force a refresh -- handy when walking past the frame.
-  function forceRefresh() { misses = 0; schedule(1); }
-  if ('ontouchend' in window) {
-    document.addEventListener('touchend', forceRefresh, false);
-  } else {
-    document.addEventListener('click', forceRefresh, false);
+  function tick() {
+    var t = new Date().getTime();
+    getJSON(bust(MAP, 't=' + t), function (data) {
+      if (data && data.tiles) {
+        // as_of changes with every render, so an unchanged frame costs no
+        // download, no decode and no flash on a slow panel.
+        var stamp = String(data.as_of || '');
+        if (stamp && stamp === shownStamp) {
+          misses = 0;
+          setStale(false);
+          schedule(PERIOD);
+          return;
+        }
+        show(bust(SRC, 'v=' + encodeURIComponent(stamp || t)), stamp, data);
+      } else {
+        show(bust(SRC, 't=' + t), '', null);
+      }
+    });
   }
+
+  // ---- Where on the PNG a tap landed ----------------------------------------
+  // The PNG is drawn background-size: contain, so it is letterboxed on
+  // whichever axis the panel is longer than the frame.
+  function toFrame(cx, cy) {
+    if (!map || !map.width || !map.height) { return null; }
+    var W = stage.clientWidth, H = stage.clientHeight;
+    var ar = map.width / map.height;
+    var w = W, h = W / ar;
+    if (h > H) { h = H; w = H * ar; }
+    var fx = (cx - (W - w) / 2) / w, fy = (cy - (H - h) / 2) / h;
+    if (fx < 0 || fy < 0 || fx > 1 || fy > 1) { return null; }
+    return { x: fx, y: fy, w: w, h: h };
+  }
+
+  function inBox(b, x, y, slop) {
+    return b && x >= b[0] - slop && y >= b[1] - slop &&
+           x <= b[0] + b[2] + slop && y <= b[1] + b[3] + slop;
+  }
+
+  function onBird(t, x, y) {
+    var b = t.box, n = map.grid;
+    if (!inBox(b, x, y, 0) || !t.grid || !n) { return false; }
+    var gx = Math.min(n - 1, Math.floor((x - b[0]) / b[2] * n));
+    var gy = Math.min(n - 1, Math.floor((y - b[1]) / b[3] * n));
+    // Count a near miss: a finger is wider than a 24th of a small bird.
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        var cx = gx + dx, cy = gy + dy;
+        if (cx >= 0 && cy >= 0 && cx < n && cy < n && t.grid.charAt(cy * n + cx) === '1') {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function hitTest(p) {
+    var tiles = map.tiles, i;
+    // Silhouettes first, topmost (last painted) first: tile rectangles
+    // overlap, so the bird actually under the finger wins.
+    for (i = tiles.length - 1; i >= 0; i--) {
+      if (onBird(tiles[i], p.x, p.y)) { return tiles[i]; }
+    }
+    // Then the hand-lettered names, which sit beside their bird.
+    for (i = tiles.length - 1; i >= 0; i--) {
+      if (inBox(tiles[i].label, p.x, p.y, 0.01)) { return tiles[i]; }
+    }
+    return null;
+  }
+
+  // ---- The card ----------------------------------------------------------------
+  var audio = null;
+  var cardTile = null;
+  var cardTimer = null;
+  var headTimer = null;
+
+  function plural(n, one, many) { return n === 1 ? one : many; }
+
+  function windowLabel(hours) {
+    if (!hours || hours === 24) { return 'in the last 24 hours'; }
+    if (hours % 24 === 0) { return 'in the last ' + (hours / 24) + ' days'; }
+    return 'in the last ' + hours + ' hours';
+  }
+
+  // "2026-10-13 14:23:21" -> "today at 14:23" / "yesterday at 14:23" / "Oct 11 at 14:23".
+  // Parsed by hand: Safari 10 reads "YYYY-MM-DD HH:MM:SS" as Invalid Date.
+  function whenLabel(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s || '');
+    if (!m) { return ''; }
+    var d = new Date(+m[1], +m[2] - 1, +m[3]);
+    var today = new Date();
+    today = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    var days = Math.round((today - d) / 86400000);
+    var hm = m[4] + ':' + m[5];
+    if (days === 0) { return 'today at ' + hm; }
+    if (days === 1) { return 'yesterday at ' + hm; }
+    var mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+    return mon + ' ' + d.getDate() + ' at ' + hm;
+  }
+
+  function layoutCard() {
+    var W = window.innerWidth, H = window.innerHeight;
+    var cw = Math.min(W - 48, 820), ch = Math.min(H - 48, 420);
+    var pw = Math.round(cw * 0.36);
+    card.style.width = cw + 'px';
+    card.style.height = ch + 'px';
+    card.style.left = Math.round((W - cw) / 2) + 'px';
+    card.style.top = Math.round((H - ch) / 2) + 'px';
+    $('.pic', card).style.width = pw + 'px';
+    $('.txt', card).style.width = (cw - pw) + 'px';
+  }
+
+  function fillFacts(t, hours) {
+    var n = +t.n || 0;
+    $('[data-k=count]', card).innerHTML = n
+      ? '<b>' + n + '</b> ' + plural(n, 'call', 'calls') + ' ' + windowLabel(hours)
+      : '';
+    var when = whenLabel(t.last_seen);
+    $('[data-k=last]', card).textContent = when ? 'Last heard ' + when : '';
+  }
+
+  function setPlay(state) {
+    var btn = $('.play', card);
+    var note = $('.note', card);
+    btn.className = 'play' + (state === 'none' ? ' off' : '');
+    btn.innerHTML = state === 'playing' ? '&#9632;&ensp;Stop' : '&#9654;&ensp;Play best call';
+    note.textContent = state === 'loading' ? 'loading…' :
+                       state === 'none' ? 'no recording' : '';
+  }
+
+  function stopAudio() {
+    if (headTimer) { window.clearInterval(headTimer); headTimer = null; }
+    $('.head', card).style.display = 'none';
+    if (audio) {
+      audio.onplaying = audio.onended = audio.onerror = null;
+      try { audio.pause(); } catch (e) {}
+      audio = null;
+    }
+    if (cardTile) { setPlay(cardTile.detection_id ? 'idle' : 'none'); }
+  }
+
+  function recordingUrl(t, kind) {
+    return API + kind + '.php?sci=' + encodeURIComponent(t.sci) +
+           '&detection=' + encodeURIComponent(t.detection_id);
+  }
+
+  function togglePlay() {
+    if (!cardTile || !cardTile.detection_id) { return; }
+    if (audio) { stopAudio(); return; }
+    // Created and played inside the tap handler: iOS only lets a user
+    // gesture start audio.
+    audio = new Audio(recordingUrl(cardTile, 'recording'));
+    var a = audio;
+    var head = $('.head', card), spec = $('.spec', card);
+    setPlay('loading');
+    a.onplaying = function () {
+      setPlay('playing');
+      head.style.display = 'block';
+      headTimer = window.setInterval(function () {
+        if (a.duration) {
+          head.style.left = Math.round(a.currentTime / a.duration * spec.clientWidth) + 'px';
+        }
+      }, 100);
+    };
+    a.onended = a.onerror = function () { stopAudio(); };
+    a.play();
+    armCardTimer();
+  }
+
+  function armCardTimer() {
+    if (cardTimer) { window.clearTimeout(cardTimer); }
+    cardTimer = window.setTimeout(closeCard, CARD_MS);
+  }
+
+  function openCard(t) {
+    cardTile = t;
+    layoutCard();
+    $('h2', card).textContent = t.com || t.sci;
+    $('.sci', card).textContent = t.com ? t.sci : '';
+    var pic = $('.pic', card);
+    // shoot.py records the cutout as a root-relative path on the station.
+    pic.style.backgroundImage = t.img ? 'url("' + t.img + '")' : '';
+    fillFacts(t, map && map.hours);
+    var spec = $('.spec', card);
+    spec.style.display = t.detection_id ? 'block' : 'none';
+    spec.style.backgroundImage = t.detection_id ? 'url("' + recordingUrl(t, 'spectrogram') + '")' : '';
+    setPlay(t.detection_id ? 'idle' : 'none');
+    veil.className = 'on';
+    armCardTimer();
+
+    // The frame can be a few minutes old; ask the station for this bird's
+    // current numbers and best clip in the same window.
+    var hours = (map && map.hours) || 24;
+    getJSON(API + 'birdnet-api.php?action=recent&hours=' + hours, function (data) {
+      if (cardTile !== t || !data || !data.species) { return; }
+      for (var i = 0; i < data.species.length; i++) {
+        var s = data.species[i];
+        if (s.sci !== t.sci) { continue; }
+        var live = { sci: t.sci, com: t.com, img: t.img, n: s.n, last_seen: s.last_seen,
+                     detection_id: s.detection_id };
+        fillFacts(live, data.hours);
+        if (!audio && live.detection_id && live.detection_id !== t.detection_id) {
+          cardTile = live;
+          spec.style.display = 'block';
+          spec.style.backgroundImage = 'url("' + recordingUrl(live, 'spectrogram') + '")';
+          setPlay('idle');
+        }
+        return;
+      }
+    });
+  }
+
+  function closeCard() {
+    if (cardTimer) { window.clearTimeout(cardTimer); cardTimer = null; }
+    stopAudio();
+    cardTile = null;
+    veil.className = '';
+  }
+
+  // ---- Taps ----------------------------------------------------------------------
+  function forceRefresh() { misses = 0; schedule(1); }
+
+  function flash(x, y) {
+    ping.className = '';
+    ping.style.left = x + 'px';
+    ping.style.top = y + 'px';
+    void ping.offsetWidth;          // restart the animation
+    ping.className = 'on';
+  }
+
+  function tap(x, y, target) {
+    if (veil.className === 'on') {
+      if (target === $('.play', card) || target === $('.spec', card) ||
+          target === $('.head', card)) {
+        togglePlay();
+      } else if (card.contains(target) && target !== $('.x', card)) {
+        armCardTimer();
+      } else {
+        closeCard();
+      }
+      return;
+    }
+    var p = map && map.tiles ? toFrame(x, y) : null;
+    var t = p ? hitTest(p) : null;
+    if (t) {
+      flash(x, y);
+      openCard(t);
+    } else {
+      // Tap empty paper to force a refresh -- handy when walking past the frame.
+      forceRefresh();
+    }
+  }
+
+  if ('ontouchend' in window) {
+    var sx = 0, sy = 0, moved = false;
+    document.addEventListener('touchstart', function (e) {
+      var p = e.changedTouches[0];
+      sx = p.clientX; sy = p.clientY; moved = false;
+    }, false);
+    document.addEventListener('touchmove', function (e) {
+      var p = e.changedTouches[0];
+      if (Math.abs(p.clientX - sx) > 12 || Math.abs(p.clientY - sy) > 12) { moved = true; }
+      e.preventDefault();             // no rubber-band scrolling on the panel
+    }, false);
+    document.addEventListener('touchend', function (e) {
+      if (moved) { return; }
+      var p = e.changedTouches[0];
+      e.preventDefault();             // no synthetic click 300ms later
+      tap(p.clientX, p.clientY, e.target);
+    }, false);
+  } else {
+    document.addEventListener('click', function (e) {
+      tap(e.clientX, e.clientY, e.target);
+    }, false);
+  }
+
+  window.addEventListener('resize', function () {
+    if (veil.className === 'on') { layoutCard(); }
+  }, false);
 
   // iOS 10 has no Page Visibility support worth relying on, but when it does
   // fire, catching up immediately beats waiting out the interval.
