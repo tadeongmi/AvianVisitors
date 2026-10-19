@@ -26,6 +26,7 @@ import re
 import socketserver
 import sys
 import threading
+import time
 import urllib.parse
 
 from playwright.sync_api import TimeoutError as PWTimeout
@@ -117,6 +118,10 @@ def _make_api_handler(floor_frac, window_hours, auth, species=None, seen=None):
             route.fulfill(status=200, content_type="application/json", body=json.dumps(data))
         except Exception as e:
             print(f"recent-API rewrite skipped: {e}", file=sys.stderr)
+            if seen is not None:
+                # Served, but unread: the shot can no longer tell an empty
+                # window from a collage still on its way.
+                seen.setdefault("recent", None)
             _safe_continue(route)
     return handler
 
@@ -311,12 +316,32 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
             # clean title card fast instead of hanging until the timeout. A page
             # with neither still times out here and stays fatal (keep last frame).
             page.wait_for_selector(".gtile, .empty", state="attached", timeout=timeout_ms)
+            # The page shows its empty nest while the recent fetch is still in
+            # flight and swaps the collage in when the data lands. Matching
+            # that placeholder skipped the illustration wait below, so the
+            # shot could fire milliseconds after the tiles went in and catch
+            # most birds unpainted. Wait for the recent payload, and when it
+            # has birds, for the collage it calls for.
+            deadline = time.monotonic() + timeout_ms / 1000
+            while "recent" not in seen and time.monotonic() < deadline:
+                page.wait_for_timeout(50)
+            if (seen.get("recent") or {}).get("species"):
+                try:
+                    page.wait_for_selector(".gtile", state="attached",
+                                           timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+                except PWTimeout:
+                    print("recent window has birds but no collage rendered; capturing anyway", file=sys.stderr)
             if page.query_selector(".gtile") is not None:
                 try:
                     page.wait_for_function(
                         "() => { const t=[...document.querySelectorAll('.gtile img')];"
                         " return t.length>0 && t.every(i=>i.complete && i.naturalWidth>0); }",
                         timeout=timeout_ms)
+                    # complete only means downloaded: the tiles' decoding="async"
+                    # images can still be missing from the next painted frame.
+                    page.evaluate(
+                        "() => Promise.all([...document.querySelectorAll('.gtile img')]"
+                        ".map(i => i.decode().catch(() => {})))")
                 except PWTimeout:
                     print("some illustrations did not finish loading; capturing anyway", file=sys.stderr)
                 if bird_names:
