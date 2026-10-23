@@ -17,7 +17,7 @@ retried on later runs, at most MAX_FAILS times per day. State lives in
 /var/lib/avian-autogen/state.json; the log is `journalctl -u avian-autogen`.
 """
 from __future__ import annotations
-import datetime, fcntl, io, json, os, sqlite3, subprocess, sys, time, traceback
+import contextlib, datetime, fcntl, io, json, os, sqlite3, subprocess, sys, time, traceback
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[2]   # <station>/avian/autogen/autogen.py
@@ -140,9 +140,13 @@ def main() -> int:
     if not todo:
         return 0
     state = load_state()
+    # OPENROUTER_API_KEY routes the same Gemini request through OpenRouter
+    # (OPENROUTER_IMAGE_MODEL picks another image model); without it, autogen
+    # calls Gemini directly with GEMINI_API_KEY.
+    router_key = conf_value("OPENROUTER_API_KEY")
     key = conf_value("GEMINI_API_KEY")
-    if not key:
-        log("no GEMINI_API_KEY in birdnet.conf; skipping")
+    if not (router_key or key):
+        log("no OPENROUTER_API_KEY or GEMINI_API_KEY in birdnet.conf; skipping")
         return 0
 
     # Same protocol as generate_one.py: hold the generation lock throughout,
@@ -168,6 +172,13 @@ def main() -> int:
     notes = pregen.load_species_notes(HERE / "species-notes.json")
     sess = None
     RAW.mkdir(parents=True, exist_ok=True)
+    route = contextlib.ExitStack()
+    if router_key:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import openrouter
+        model = conf_value("OPENROUTER_IMAGE_MODEL") or openrouter.DEFAULT_MODEL
+        route.enter_context(openrouter.routed(pregen.GEMINI_URL, router_key, model))
+        log(f"rendering through OpenRouter ({model})")
 
     for sci, com, poses in todo:
         if len(state["made"]) >= DAILY_CAP:
@@ -220,6 +231,7 @@ def main() -> int:
             log(f"  [fail] {sci}: {exc}")
             traceback.print_exc()
         save_state(state)
+    route.close()
     return 0
 
 

@@ -36,6 +36,17 @@ run downloads the BiRefNet model (~1 GB) to `/var/lib/avian-autogen/u2net`.
 The cutout peaks around 14 GB of RAM, so it suits a workstation-class station
 better than a Pi.
 
+## Image provider
+
+By default autogen calls Gemini directly with `GEMINI_API_KEY` from
+`birdnet.conf`. Add `OPENROUTER_API_KEY` there and it sends the same request
+through OpenRouter instead (`openrouter.py` translates upstream's Gemini
+request part for part, so the prompt, notes and reference images are
+unchanged). `OPENROUTER_IMAGE_MODEL` picks another image model; the default
+is `google/gemini-2.5-flash-image`, the model the included art was drawn with.
+Remove the OpenRouter key to go back to Gemini direct. The Atlas "generate"
+button is upstream code and always uses Gemini direct.
+
 ## Limits
 
 - At most 10 species per day, and 3 failed attempts per species per day
