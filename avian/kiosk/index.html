@@ -20,7 +20,7 @@
     margin: 0;
     padding: 0;
     height: 100%;
-    background: #efece0;          /* --paper, matched to the collage ground */
+    background: #fcfcfb;          /* --paper, matched to the collage ground */
     overflow: hidden;
     -webkit-user-select: none;
     user-select: none;
@@ -29,13 +29,79 @@
   }
   #stage {
     position: absolute;
-    top: 0; right: 0; bottom: 0; left: 0;   /* not inset: -- Safari 14.1+ */
-    background-color: #efece0;
+    top: 96px; right: 0; bottom: 0; left: 0;   /* not inset: -- Safari 14.1+; top tracks #head */
+    background-color: #fcfcfb;
     background-repeat: no-repeat;
     background-position: 50% 50%;
     -webkit-background-size: contain;        /* iOS 4-ish prefix, harmless */
     background-size: contain;
   }
+  /* The lettered header: the time window over the site name, as the collage
+     sets its own title block. The whole band is the tap target for the
+     window menu; the dashed range marks it as the thing that changes. */
+  #head {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 96px;
+    text-align: center;
+    color: #1a1612;
+    font-family: "Iowan Old Style", Georgia, "Times New Roman", serif;
+  }
+  #head .pre {
+    margin: 12px 0 0;
+    font-size: 19px;
+    line-height: 30px;
+    font-style: italic;
+    letter-spacing: .06em;
+    color: #4a3f31;
+  }
+  #range {
+    display: inline-block;
+    padding: 0 4px;
+    border-bottom: 1px dashed #4a3f31;
+    line-height: 26px;
+  }
+  #range .caret {
+    font-style: normal;
+    font-size: 12px;
+    margin-left: 6px;
+    vertical-align: 2px;
+  }
+  #range.fixed { border-bottom: 0; }
+  #range.fixed .caret { display: none; }
+  #head h1 {
+    margin: 2px 0 0;
+    font-size: 40px;
+    line-height: 44px;
+    font-weight: bold;
+    letter-spacing: .06em;
+  }
+  #menu {
+    position: absolute;
+    top: 44px; left: 50%;
+    width: 240px;
+    margin-left: -120px;
+    background: #fbfaf5;
+    border: 1px solid #d8d2bf;
+    border-radius: 6px;
+    -webkit-box-shadow: 0 10px 40px rgba(26, 22, 18, .18);
+    box-shadow: 0 10px 40px rgba(26, 22, 18, .18);
+    font-family: "Iowan Old Style", Georgia, "Times New Roman", serif;
+    color: #1a1612;
+    text-align: center;
+    display: none;
+  }
+  #menu.on { display: block; }
+  #menu div {
+    height: 56px;
+    line-height: 56px;
+    font-size: 21px;
+    font-style: italic;
+    border-top: 1px solid #ece7d8;
+  }
+  #menu div:first-child { border-top: 0; }
+  #menu div.cur { font-style: normal; font-weight: bold; }
+
   /* A quiet corner dot, only while the shot is stale. No animation on e-ink-ish
      panels and no layout impact. */
   #stale {
@@ -78,7 +144,7 @@
   #veil {
     position: absolute;
     top: 0; right: 0; bottom: 0; left: 0;
-    background: rgba(239, 236, 224, .82);
+    background: rgba(252, 252, 251, .84);
     display: none;
   }
   #veil.on { display: block; }
@@ -180,6 +246,11 @@
 </head>
 <body>
   <div id="stage"></div>
+  <div id="head">
+    <p class="pre"><span id="lead">heard in the last</span> <span id="range" class="fixed"><span id="rlabel">24 hours</span><span class="caret">&#9662;</span></span></p>
+    <h1 id="site"></h1>
+  </div>
+  <div id="menu"></div>
   <div id="ping"></div>
   <div id="stale"></div>
   <div id="veil">
@@ -209,8 +280,14 @@
     return url + (url.indexOf('?') === -1 ? '?' : '&') + v;
   }
 
-  var SRC     = param('src', 'frame.png');
+  // A ?src= pins the panel to one PNG (and its JSON) with no window toggle.
+  // Otherwise the station renders one frame per time window, listed in
+  // windows.json, and the header switches between them.
+  var PINNED  = param('src', '');
+  var SRC     = PINNED || 'frame.png';
   var MAP     = param('map', SRC.replace(/\.png(\?.*)?$/, '.json'));
+  var WINDOWS = [];
+  var win     = '';
   // The station's API sits one level up from /kiosk/.
   var API     = param('api', '../avian/api/');
   var PERIOD  = Math.max(15, parseInt(param('period', '60'), 10) || 60) * 1000;
@@ -221,10 +298,15 @@
   var ping    = $('#ping');
   var veil    = $('#veil');
   var card    = $('#card');
+  var head    = $('#head');
+  var menu    = $('#menu');
 
   var timer = null;
   var misses = 0;
   var shownStamp = '';
+  // Bumped on every window switch so a fetch for the old window that lands
+  // late cannot put its picture back up.
+  var gen = 0;
   // frame.json for the PNG on screen; null until one loads, and on stations
   // whose render helper predates it (the panel then just shows the picture).
   var map = null;
@@ -262,9 +344,11 @@
     schedule(Math.min(PERIOD * misses, 300000));
   }
 
-  function show(url, stamp, nextMap) {
+  function show(url, stamp, nextMap, g) {
     var img = new Image();
     img.onload = function () {
+      if (g !== gen) { img.onload = img.onerror = null; return; }
+      setHead(nextMap);
       stage.style.backgroundImage = 'url("' + url + '")';
       shownStamp = stamp;
       map = nextMap;
@@ -275,14 +359,16 @@
     };
     img.onerror = function () {
       img.onload = img.onerror = null;
-      failed();
+      if (g === gen) { failed(); }
     };
     img.src = url;
   }
 
   function tick() {
     var t = new Date().getTime();
+    var g = gen;
     getJSON(bust(MAP, 't=' + t), function (data) {
+      if (g !== gen) { return; }
       if (data && data.tiles) {
         // as_of changes with every render, so an unchanged frame costs no
         // download, no decode and no flash on a slow panel.
@@ -293,11 +379,90 @@
           schedule(PERIOD);
           return;
         }
-        show(bust(SRC, 'v=' + encodeURIComponent(stamp || t)), stamp, data);
+        show(bust(SRC, 'v=' + encodeURIComponent(stamp || t)), stamp, data, g);
       } else {
-        show(bust(SRC, 't=' + t), '', null);
+        show(bust(SRC, 't=' + t), '', null, g);
       }
     });
+  }
+
+  // ---- The header and its time window ---------------------------------------
+  function store(k, v) {
+    // Safari's private mode throws on any localStorage write.
+    try {
+      if (v === undefined) { return window.localStorage.getItem(k); }
+      window.localStorage.setItem(k, v);
+    } catch (e) {}
+    return null;
+  }
+
+  function titleCase(s) {
+    return String(s || '').replace(/(^|[\s-])(\S)/g, function (m, a, b) {
+      return a + b.toUpperCase();
+    });
+  }
+
+  function windowOf(hours) {
+    if (!hours) { return ''; }
+    return hours >= 1000000 ? 'all' : String(hours);
+  }
+
+  // [lead, range]: the range is the part the toggle changes.
+  function rangeParts(w, clamped) {
+    if (w === 'all') { return ['heard over', 'all time']; }
+    var h = +w;
+    if (!h) { return ['heard', 'recently']; }
+    if (h === 24 && clamped) { return ['heard', 'since midnight']; }
+    if (h === 1) { return ['heard in the last', 'hour']; }
+    if (h === 24) { return ['heard in the last', '24 hours']; }
+    if (h % 24 === 0) { return ['heard in the last', (h / 24) + ' days']; }
+    return ['heard in the last', h + ' hours'];
+  }
+
+  function menuLabel(w) {
+    var p = rangeParts(w, false);
+    return p[0] === 'heard over' ? p[1] : 'last ' + p[1];
+  }
+
+  function setHead(m) {
+    var title = m && (m.title || titleCase(m.site_name));
+    if (title) {
+      $('#site').textContent = title;
+      store('kiosk:title', title);
+    }
+    var p = rangeParts(win || windowOf(m && m.hours), m && m.midnight_clamped);
+    $('#lead').textContent = p[0];
+    $('#rlabel').textContent = p[1];
+  }
+
+  function setWindow(w) {
+    win = w;
+    SRC = 'frame-' + w + '.png';
+    MAP = 'frame-' + w + '.json';
+    shownStamp = '';
+    gen++;
+    // The tiles on screen belong to the old window until the new frame lands.
+    map = null;
+    setHead(null);
+  }
+
+  function openMenu() {
+    var html = '';
+    for (var i = 0; i < WINDOWS.length; i++) {
+      html += '<div data-w="' + WINDOWS[i] + '"' + (WINDOWS[i] === win ? ' class="cur"' : '') +
+              '>' + menuLabel(WINDOWS[i]) + '</div>';
+    }
+    menu.innerHTML = html;
+    menu.className = 'on';
+  }
+
+  function closeMenu() { menu.className = ''; }
+
+  function chooseWindow(w) {
+    if (!w || w === win) { return; }
+    setWindow(w);
+    store('kiosk:window', w);
+    forceRefresh();
   }
 
   // ---- Where on the PNG a tap landed ----------------------------------------
@@ -309,6 +474,7 @@
     var ar = map.width / map.height;
     var w = W, h = W / ar;
     if (h > H) { h = H; w = H * ar; }
+    cx -= stage.offsetLeft; cy -= stage.offsetTop;
     var fx = (cx - (W - w) / 2) / w, fy = (cy - (H - h) / 2) / h;
     if (fx < 0 || fy < 0 || fx > 1 || fy > 1) { return null; }
     return { x: fx, y: fy, w: w, h: h };
@@ -359,6 +525,8 @@
   function plural(n, one, many) { return n === 1 ? one : many; }
 
   function windowLabel(hours) {
+    if (hours >= 1000000) { return 'over all time'; }
+    if (hours === 1) { return 'in the last hour'; }
     if (!hours || hours === 24) { return 'in the last 24 hours'; }
     if (hours % 24 === 0) { return 'in the last ' + (hours / 24) + ' days'; }
     return 'in the last ' + hours + ' hours';
@@ -512,6 +680,15 @@
   }
 
   function tap(x, y, target) {
+    if (menu.className === 'on') {
+      closeMenu();
+      if (menu.contains(target) && target !== menu) { chooseWindow(target.getAttribute('data-w')); }
+      return;
+    }
+    if (veil.className !== 'on' && head.contains(target)) {
+      if (WINDOWS.length > 1) { openMenu(); } else { forceRefresh(); }
+      return;
+    }
     if (veil.className === 'on') {
       if (target === $('.play', card) || target === $('.spec', card) ||
           target === $('.head', card)) {
@@ -569,7 +746,29 @@
     }, false);
   }
 
-  tick();
+  $('#site').textContent = store('kiosk:title') || '';
+  if (PINNED) {
+    tick();
+  } else {
+    getJSON('windows.json?t=' + new Date().getTime(), function (data) {
+      var list = data && data.windows;
+      if (list && list.length) {
+        WINDOWS = list;
+        var headPx = +data.head_px;
+        if (headPx > 0) {
+          head.style.height = headPx + 'px';
+          stage.style.top = headPx + 'px';
+        }
+        var saved = store('kiosk:window');
+        var w = data['default'];
+        for (var i = 0; i < list.length; i++) { if (list[i] === saved) { w = saved; } }
+        setWindow(w || list[0]);
+        if (list.length > 1) { $('#range').className = ''; }
+      }
+      // No windows.json: a station that renders the one frame.png.
+      tick();
+    });
+  }
 }());
 </script>
 </body>

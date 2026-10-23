@@ -50,7 +50,7 @@ HIDE_CSS = """
 """
 
 
-def _frame_css(headline_px, eyebrow_px, lowercase, pad_top, pad_side, pad_bottom, collage_vh):
+def _frame_css(headline_px, eyebrow_px, lowercase, pad_top, pad_side, pad_bottom, collage_vh, head=True):
     css = (
         f".stage {{ padding: {pad_top}px {pad_side}px {pad_bottom}px !important;"
         f" box-sizing: border-box !important; justify-content: center !important; }}"
@@ -67,6 +67,10 @@ def _frame_css(headline_px, eyebrow_px, lowercase, pad_top, pad_side, pad_bottom
     )
     if lowercase:
         css += ".static-head h1 { text-transform: none !important; }"
+    if not head:
+        # Birds only: a panel that letters its own header (the kiosk) gets
+        # the whole frame for the collage.
+        css += ".static-head { display: none !important; }"
     return css
 
 
@@ -190,7 +194,7 @@ HOTSPOT_JS = """(n) => {
 }"""
 
 
-def _hotspots(page, vw, vh, recent):
+def _hotspots(page, vw, vh, recent, title=None):
     """Describe the rendered tiles plus the recent-window facts for each."""
     tiles = page.evaluate(HOTSPOT_JS, HOTSPOT_GRID)
     by_sci = {s.get("sci"): s for s in (recent or {}).get("species", [])}
@@ -203,6 +207,9 @@ def _hotspots(page, vw, vh, recent):
         "width": vw, "height": vh, "grid": HOTSPOT_GRID,
         "hours": (recent or {}).get("hours"),
         "as_of": (recent or {}).get("as_of"),
+        "midnight_clamped": bool((recent or {}).get("midnight_clamped")),
+        "site_name": (recent or {}).get("site_name"),
+        "title": title,
         "tiles": tiles,
     }
 
@@ -229,7 +236,7 @@ def _make_cutout_handler(base, local_dir=None):
     return handler
 
 
-def _make_js_handler(xbias, ybias, count_exp, pad, label_min_px, auth, misses):
+def _make_js_handler(xbias, ybias, count_exp, pad, label_min_px, auth, misses, fill=1.0):
     """Rewrite the collage tunables inside the page's apt.js at capture time."""
     def handler(route):
         try:
@@ -239,7 +246,9 @@ def _make_js_handler(xbias, ybias, count_exp, pad, label_min_px, auth, misses):
                               (r"var yBias = narrow \? 1\.7 : 1;", f"var yBias = {ybias};"),
                               (r"countExp:\s*[\d.]+,", f"countExp: {count_exp},"),
                               (r"var pad = narrow \? Math\.max\(1, COLLAGE_PAD - 1\) : COLLAGE_PAD;", f"var pad = {pad};"),
-                              (r"var LABEL_MIN_PX = \d+;", f"var LABEL_MIN_PX = {int(label_min_px)};")):
+                              (r"var LABEL_MIN_PX = \d+;", f"var LABEL_MIN_PX = {int(label_min_px)};"),
+                              (r"var budget = vpArea \* T\.packingBudgetFrac;",
+                               f"var budget = vpArea * Math.min(0.9, T.packingBudgetFrac * {float(fill)});")):
                 js, n = re.subn(pat, repl, js)
                 if not n:
                     misses.append(pat)
@@ -256,7 +265,7 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
           count_exp=0.4, cluster_pad=1, label_min_px=11, small_floor=0.04, window_hours=None,
           timeout_ms=45000, user=None, password=None, species=None, cutout_base=None,
           cutout_local=None, empty_text="listening for birds…", bird_names=False,
-          hotspots=None):
+          hotspots=None, head=True, fill=1.0):
     pad_side, pad_top, pad_bottom = int(vw * mat), int(vh * mat * 0.92), int(vh * mat)
     auth = "Basic " + base64.b64encode(f"{user}:{password or ''}".encode()).decode() if user else None
 
@@ -284,7 +293,7 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
             page.route("**/birdnet-api.php**", _make_api_handler(small_floor, window_hours, auth, species, seen))
             page.route("**/apt.js*", _make_js_handler(
                 cluster_xbias, cluster_ybias, count_exp, cluster_pad,
-                label_min_px, auth, misses))
+                label_min_px, auth, misses, fill))
             if bird_names:
                 hand_font = os.path.realpath(os.path.join(
                     os.path.dirname(__file__), "..", "avian", "frontend", "fonts", "Caveat.ttf"))
@@ -295,7 +304,7 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
             if cutout_base:
                 page.route("**/cutout.php*", _make_cutout_handler(cutout_base, cutout_local))
 
-            css = HIDE_CSS + _frame_css(headline_px, eyebrow_px, lowercase, pad_top, pad_side, pad_bottom, collage_vh)
+            css = HIDE_CSS + _frame_css(headline_px, eyebrow_px, lowercase, pad_top, pad_side, pad_bottom, collage_vh, head)
             page.add_init_script(
                 "document.addEventListener('DOMContentLoaded',function(){"
                 "var s=document.createElement('style');s.textContent=" + json.dumps(css) +
@@ -383,7 +392,7 @@ def shoot(url, out, *, title=None, subtitle=None, vw=600, vh=800, dsf=2,
             page.screenshot(path=out, clip={"x": 0, "y": 0, "width": vw, "height": vh})
             if hotspots:
                 with open(hotspots, "w", encoding="utf-8") as f:
-                    json.dump(_hotspots(page, vw, vh, seen.get("recent")), f, separators=(",", ":"))
+                    json.dump(_hotspots(page, vw, vh, seen.get("recent"), title), f, separators=(",", ":"))
         finally:
             browser.close()
     return out
@@ -429,6 +438,10 @@ def main():
                     help="eyebrow font px; default 18 for the mic, 17 for --bird-weather")
     ap.add_argument("--mat", type=float, default=0.04)
     ap.add_argument("--collage-vh", type=float, default=52)
+    ap.add_argument("--no-head", action="store_true",
+                    help="leave the title block out and give the collage the whole frame")
+    ap.add_argument("--fill", type=float, default=1.0,
+                    help="scale the collage's area budget (1 = the site's own; >1 packs bigger birds)")
     ap.add_argument("--cluster-xbias", type=float, default=1.0)
     ap.add_argument("--cluster-ybias", type=float, default=1.2)
     ap.add_argument("--count-exp", type=float, default=None,
@@ -499,7 +512,7 @@ def main():
               cluster_ybias=a.cluster_ybias, count_exp=count_exp, cluster_pad=a.cluster_pad,
               small_floor=a.small_floor,
               window_hours=a.window_hours, timeout_ms=a.timeout, user=a.user, password=a.password,
-              bird_names=a.bird_names, hotspots=a.hotspots)
+              bird_names=a.bird_names, hotspots=a.hotspots, head=not a.no_head, fill=a.fill)
     except Exception as e:
         print(f"shoot failed: {e}", file=sys.stderr)
         sys.exit(1)

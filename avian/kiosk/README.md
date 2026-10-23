@@ -14,11 +14,12 @@ headless Chromium — the same `frame/shoot.py` the e-ink frame uses — and wri
 PNG into the webroot. The panel displays a picture, which iOS 10 does perfectly.
 
 ```
-  station: BirdNET-Pi → collage → shoot.py (headless Chromium) → frame.png
-                                                               → frame.json
+  station: BirdNET-Pi → collage → shoot.py (headless Chromium) → frame-<window>.png
+                                       (once per time window)  → frame-<window>.json
+                                                               → windows.json
                                                                    ↓
-  iPad 4 (Safari 10):  /kiosk/  →  <div style="background-image: frame.png">
-                                   + tap targets from frame.json
+  iPad 4 (Safari 10):  /kiosk/  →  header + <div style="background-image: frame-24.png">
+                                   + tap targets from frame-24.json
 ```
 
 The picture is also tappable. Alongside the PNG, `shoot.py --hotspots` writes
@@ -28,6 +29,18 @@ Tapping a bird opens a card with its illustration, call count, when it was last
 heard, the spectrogram of its best clip and a button to play it. The card asks
 the station's API for current numbers as it opens, so a frame a few minutes old
 still shows the latest count. Tapping empty paper re-checks for a new frame.
+
+## Header and time window
+
+The panel letters its own header, so the PNGs are birds only and fill the
+screen below it: "heard in the last 24 hours" over the station's site name,
+title-cased ("la lucila" → "La Lucila"; `KIOSK_TITLE` overrides it). The range
+is the toggle: tapping the header opens a menu of the windows the station
+renders (`KIOSK_WINDOWS`, default `1 12 24 168 all`, the same as the site's
+picker) and switches to that window's frame. The choice is kept in the
+browser, so the panel reopens on it; it starts on `KIOSK_DEFAULT_WINDOW` (24).
+`frame.png` and `frame.json` stay copies of the default window, for a panel
+pinned with `?src=` or one whose page predates the toggle.
 
 The panel needs to reach the station over Wi-Fi: a USB cable only charges an
 iPad, since iOS 10 Safari has no way to load pages over it.
@@ -53,11 +66,12 @@ iPad 4 in landscape. For a portrait panel, override before installing:
 KIOSK_WIDTH=768 KIOSK_HEIGHT=1024 bash ~/BirdNET-Pi/avian/kiosk/install-kiosk.sh
 ```
 
-`shoot.py`'s layout defaults suit a portrait frame, so when the width is the
-larger side the render helper gives the collage 74% of the height and spreads
-the cluster sideways (`--collage-vh 74 --cluster-xbias 1.5 --cluster-ybias 0.9
---mat 0.03`). To tune further, put extra flags in `KIOSK_SHOOT_ARGS`; they come
-last, so they win.
+Each frame is `KIOSK_HEAD_PX` (96) shorter than the screen, rendered with
+`--no-head` and `--fill 2`, which doubles the site's own area budget so the
+birds claim the frame instead of floating in paper (`KIOSK_FILL`). When the
+width is the larger side the helper also spreads the cluster to the full
+rectangle (`--cluster-xbias 1.5 --cluster-ybias 1.5`). To tune further, put
+extra flags in `KIOSK_SHOOT_ARGS`; they come last, so they win.
 
 Settings live in `/etc/avian-kiosk.conf`; edit and
 `sudo systemctl restart avian-kiosk.timer`.
@@ -76,8 +90,10 @@ rm -f <webroot>/kiosk/.rendered-for   # forget what the last frame was rendered 
 sudo systemctl start avian-kiosk.service
 ```
 
-The render writes to temp files and `mv`s the PNG and then `frame.json` into
-place, so the panel never fetches a half-written file. The page polls
+Each pass renders every window (about 12 s for five on nodi). The render writes
+to temp files and `mv`s each PNG and then its JSON into place, so the panel
+never fetches a half-written file; a window that fails keeps its previous frame
+while the rest update. The page polls
 `frame.json` every minute (`?period=` in seconds), downloads the PNG only when a
 new render has landed, backs off to 5 minutes after repeated failures, and shows
 a small red dot once a shot is properly stale. A station whose render helper

@@ -25,8 +25,14 @@ KIOSK_INTERVAL=${KIOSK_INTERVAL:-2min}
 KIOSK_MAX_AGE=${KIOSK_MAX_AGE:-600}
 KIOSK_SHOOT_ARGS=${KIOSK_SHOOT_ARGS:-}
 KIOSK_TITLE=${KIOSK_TITLE:-}
-KIOSK_SUBTITLE=${KIOSK_SUBTITLE:-}
 KIOSK_BIRD_NAMES=${KIOSK_BIRD_NAMES:-0}
+# The panel's lettered header (site name, "heard in the last ..."), CSS px.
+KIOSK_HEAD_PX=${KIOSK_HEAD_PX:-96}
+# How much of the frame the birds claim, relative to the site's own collage.
+KIOSK_FILL=${KIOSK_FILL:-2}
+# Time windows the header toggle offers (hours, or "all"), and the one it opens on.
+KIOSK_WINDOWS=${KIOSK_WINDOWS:-1 12 24 168 all}
+KIOSK_DEFAULT_WINDOW=${KIOSK_DEFAULT_WINDOW:-24}
 
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -88,8 +94,12 @@ KIOSK_URL=$KIOSK_URL
 KIOSK_WIDTH=$KIOSK_WIDTH
 KIOSK_HEIGHT=$KIOSK_HEIGHT
 KIOSK_DSF=$KIOSK_DSF
+# Header name; empty uses the station's site name.
 KIOSK_TITLE=$KIOSK_TITLE
-KIOSK_SUBTITLE=$KIOSK_SUBTITLE
+KIOSK_HEAD_PX=$KIOSK_HEAD_PX
+KIOSK_FILL=$KIOSK_FILL
+KIOSK_WINDOWS="$KIOSK_WINDOWS"
+KIOSK_DEFAULT_WINDOW=$KIOSK_DEFAULT_WINDOW
 # Show common species names beside each bird (1 = on, 0 = off).
 KIOSK_BIRD_NAMES=$KIOSK_BIRD_NAMES
 # Re-render at least this often (seconds) even with no new detections.
@@ -103,15 +113,21 @@ sudo chmod 0644 "$CONF"
 say "Installing the render helper"
 sudo tee /usr/local/bin/avian-kiosk-shot >/dev/null <<HELPEOF
 #!/usr/bin/env bash
-# Render the collage to a PNG, plus frame.json saying where each bird landed
-# (the panel's tap targets), and swap both into the webroot atomically, so the
-# panel never fetches a half-written file.
+# Render the collage once per time window the panel offers, each as a PNG plus
+# a frame-<window>.json saying where each bird landed (the panel's tap
+# targets), and swap them into the webroot atomically, so the panel never
+# fetches a half-written file. The panel letters its own header, so the PNGs
+# are birds only and KIOSK_HEAD_PX shorter than the screen.
 set -euo pipefail
 : "\${KIOSK_URL:=http://127.0.0.1/}"
 : "\${KIOSK_WIDTH:=1024}"
 : "\${KIOSK_HEIGHT:=768}"
 : "\${KIOSK_DSF:=2}"
 : "\${KIOSK_MAX_AGE:=600}"
+: "\${KIOSK_HEAD_PX:=96}"
+: "\${KIOSK_FILL:=2}"
+: "\${KIOSK_WINDOWS:=1 12 24 168 all}"
+: "\${KIOSK_DEFAULT_WINDOW:=24}"
 dir=$WEBROOT/kiosk
 out=\$dir/frame.png
 map=\$dir/frame.json
@@ -125,43 +141,71 @@ if [ "\${KIOSK_FORCE:-0}" != 1 ] && [ -s "\$out" ] && [ -s "\$map" ] \
    && [ \$(( \$(date +%s) - \$(stat -c %Y "\$out") )) -lt "\$KIOSK_MAX_AGE" ]; then
   exit 0
 fi
-tmp=\$(mktemp "\$dir/.frame.XXXXXX.png")
-tmpmap=\$(mktemp "\$dir/.frame.XXXXXX.json")
-trap 'rm -f "\$tmp" "\$tmpmap"' EXIT
-args=(--url "\$KIOSK_URL" --out "\$tmp" --hotspots "\$tmpmap"
-      --width "\$KIOSK_WIDTH" --height "\$KIOSK_HEIGHT" --dsf "\$KIOSK_DSF")
+case " \$KIOSK_WINDOWS " in
+  *" \$KIOSK_DEFAULT_WINDOW "*) ;;
+  *) echo "KIOSK_DEFAULT_WINDOW=\$KIOSK_DEFAULT_WINDOW is not in KIOSK_WINDOWS" >&2; exit 1 ;;
+esac
+tmp=\$(mktemp -d "\$dir/.render.XXXXXX")
+trap 'rm -rf "\$tmp"' EXIT
+args=(--url "\$KIOSK_URL" --width "\$KIOSK_WIDTH" --height "\$((KIOSK_HEIGHT - KIOSK_HEAD_PX))"
+      --dsf "\$KIOSK_DSF" --no-head --fill "\$KIOSK_FILL" --collage-vh 96 --mat 0.02)
 # shoot.py's defaults are tuned for a portrait frame. On a landscape panel,
-# give the collage more of the height and let the cluster spread sideways.
+# spread the cluster to the panel's full width and height.
 if [ "\$KIOSK_WIDTH" -gt "\$KIOSK_HEIGHT" ]; then
-  args+=(--collage-vh 74 --cluster-xbias 1.5 --cluster-ybias 0.9 --mat 0.03)
+  args+=(--cluster-xbias 1.5 --cluster-ybias 1.5)
 fi
+# The panel letters the header from frame.json: the station's site name, or
+# KIOSK_TITLE when set.
 [ -n "\${KIOSK_TITLE:-}" ] && args+=(--title "\$KIOSK_TITLE")
-[ -n "\${KIOSK_SUBTITLE:-}" ] && args+=(--subtitle "\$KIOSK_SUBTITLE")
 case "\${KIOSK_BIRD_NAMES:-0}" in 1|true|yes|on) args+=(--bird-names) ;; esac
 # shellcheck disable=SC2206  # word-split on purpose: a list of flags
 [ -n "\${KIOSK_SHOOT_ARGS:-}" ] && args+=(\$KIOSK_SHOOT_ARGS)
 cd "$FRAME_DIR"
-# shoot.py intermittently fails with "frame labels missing for: <species>"
-# when --bird-names is on. The cause is upstream and not understood here;
-# an identical re-run succeeds. On a timer-driven wall display a single
-# flaky render would leave a stale PNG up for the whole interval, so retry
-# rather than give up.
-attempt=1
-until "$VENV/bin/python" "$FRAME_DIR/shoot.py" "\${args[@]}"; do
-  if [ "\$attempt" -ge 3 ]; then
-    echo "render failed after \$attempt attempts" >&2
-    exit 1
-  fi
-  echo "render attempt \$attempt failed; retrying" >&2
-  attempt=\$((attempt + 1))
-  sleep 5
+render() {
+  local win=\$1 hours=\$1 attempt=1
+  [ "\$win" = all ] && hours=1000000
+  # shoot.py intermittently fails with "frame labels missing for: <species>"
+  # when --bird-names is on; an identical re-run succeeds. Retry rather than
+  # leave a stale PNG up for the whole interval.
+  until "$VENV/bin/python" "$FRAME_DIR/shoot.py" "\${args[@]}" --window-hours "\$hours" \
+          --out "\$tmp/frame-\$win.png" --hotspots "\$tmp/frame-\$win.json"; do
+    if [ "\$attempt" -ge 3 ]; then
+      echo "render of window \$win failed after \$attempt attempts" >&2
+      return 1
+    fi
+    echo "render of window \$win attempt \$attempt failed; retrying" >&2
+    attempt=\$((attempt + 1))
+    sleep 5
+  done
+}
+ok=()
+for win in \$KIOSK_WINDOWS; do
+  # A window that will not render keeps its previous frame; the others still update.
+  render "\$win" && ok+=("\$win") || true
 done
-chmod 0644 "\$tmp" "\$tmpmap"
-# PNG first: the panel polls frame.json and then fetches the PNG it describes.
-mv -f "\$tmp" "\$out"
-mv -f "\$tmpmap" "\$map"
-echo "\$stamp" > "\$stamp_file"
-trap - EXIT
+[ \${#ok[@]} -gt 0 ] || { echo "no window rendered" >&2; exit 1; }
+chmod 0644 "\$tmp"/frame-*
+for win in "\${ok[@]}"; do
+  # PNG first: the panel polls the JSON and then fetches the PNG it describes.
+  mv -f "\$tmp/frame-\$win.png" "\$dir/frame-\$win.png"
+  mv -f "\$tmp/frame-\$win.json" "\$dir/frame-\$win.json"
+done
+# frame.png/frame.json stay the default window, for panels that predate the
+# window toggle (and for the freshness check above).
+if [ -s "\$dir/frame-\$KIOSK_DEFAULT_WINDOW.png" ]; then
+  cp -f "\$dir/frame-\$KIOSK_DEFAULT_WINDOW.png" "\$tmp/frame.png"
+  cp -f "\$dir/frame-\$KIOSK_DEFAULT_WINDOW.json" "\$tmp/frame.json"
+  mv -f "\$tmp/frame.png" "\$out"
+  mv -f "\$tmp/frame.json" "\$map"
+fi
+printf '{"windows":[%s],"default":"%s","head_px":%d}\n' \
+  "\$(printf '"%s",' \$KIOSK_WINDOWS | sed 's/,\$//')" "\$KIOSK_DEFAULT_WINDOW" "\$KIOSK_HEAD_PX" \
+  > "\$tmp/windows.json"
+chmod 0644 "\$tmp/windows.json"
+mv -f "\$tmp/windows.json" "\$dir/windows.json"
+# Only a full set counts as current; a partial one is retried next tick.
+[ \${#ok[@]} -eq \$(echo \$KIOSK_WINDOWS | wc -w) ] && echo "\$stamp" > "\$stamp_file"
+exit 0
 HELPEOF
 sudo chmod 0755 /usr/local/bin/avian-kiosk-shot
 
