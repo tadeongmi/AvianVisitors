@@ -148,7 +148,11 @@ def anti_reference(pregen, sci: str) -> tuple[str | None, Path | None]:
             if got:
                 dst = REFS / f"_anti_{key}.jpg"
                 tmp = dst.with_name("." + dst.name + ".tmp")
-                Image.open(got).convert("RGB").save(tmp, "JPEG", quality=90)
+                im = Image.open(got).convert("RGB")
+                # pregen sends anti-refs as-is; a full-size photo dominates as a style
+                # signal (pregen shrinks the positive reference to 384px for that reason).
+                im.thumbnail((512, 512))
+                im.save(tmp, "JPEG", quality=90)
                 tmp.replace(dst)
                 log(f"  fetched the {info['common_name']} anti-reference")
                 path = dst
