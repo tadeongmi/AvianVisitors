@@ -276,6 +276,16 @@ async function settle() {
 }
 
 async function main() {
+  const hint = { textContent: '', children: [], appendChild: function (child) { this.children.push(child); } };
+  const recoveryContext = { lockHint: hint, document: { createElement: function () { return {}; } } };
+  vm.createContext(recoveryContext);
+  vm.runInContext(extractFunction('setAdminLockHint'), recoveryContext);
+  recoveryContext.setAdminLockHint('', true, true);
+  assert.ok(hint.textContent.includes('installation'), 'missing helper explains installation recovery');
+  assert.ok(!hint.textContent.includes('password-reset'), 'missing helper never recommends an unavailable reset command');
+  assert.ok(hint.children[0].href.endsWith('#updating-an-existing-station'), 'installation recovery links to verified setup');
+  recoveryContext.setAdminLockHint('', true, false);
+  assert.ok(hint.textContent.includes('avian-admin-control password-reset'), 'healthy helper retains password recovery');
   const rowContext = {};
   vm.createContext(rowContext);
   vm.runInContext([
@@ -491,7 +501,7 @@ async function main() {
   assert.deepStrictEqual(JSON.parse(JSON.stringify(idle.context.state())), { locks: 1, reprobes: 0 },
     'a current confirmed-idle result still locks the admin UI');
 
-  process.stdout.write('admin frontend auth tests passed (30 checks)\n');
+  process.stdout.write('admin frontend auth tests passed (34 checks)\n');
 }
 
 main().catch(function (error) {

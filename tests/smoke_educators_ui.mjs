@@ -878,6 +878,7 @@ const loadingNodes = {
   educatorDataLoading: { hidden: true },
 };
 const transactionContext = {
+  window: {},
   AUTOMATIC_EDUCATOR_SCOPE_ID: 'active',
   EDUCATOR_SCOPE_KEY: 'scope',
   educatorScopeGeneration: 3,
@@ -914,7 +915,7 @@ const transactionContext = {
   stopModalAudio() {},
   scopedFetchJson(action) {
     if (action === 'recent' && failScopedRecent) return Promise.reject(new Error('scope B unavailable'));
-    return Promise.resolve({ action, site_name: action === 'recent' ? 'School' : undefined });
+    return Promise.resolve({ action, species: [], site_name: action === 'recent' ? 'School' : undefined });
   },
   educatorBatchIsCurrent() { return true; },
   applySiteName() {},
@@ -4111,6 +4112,7 @@ assert.equal(pendingCountRemoved, 1, 'the patched row leaves the pending observa
 assert.match(functionSource('suspendEducatorScopes'), /clearEducatorCountState/,
   'admin authorization loss clears private saved-count state');
 assert.match(html, /styles\.css\?v=r196/, 'the Educators workspace styles use the frozen cache key');
-assert.match(html, /apt\.js\?v=r234/, 'the Educators workspace behavior uses the frozen cache key');
+assert.ok(Number((html.match(/apt\.js\?v=r(\d+)/) || [])[1]) >= 242,
+  'the frontend cache key must include the current settings changes');
 
 console.log('Educators frontend smoke: ok');

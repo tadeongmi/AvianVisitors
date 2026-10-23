@@ -7,37 +7,16 @@ $_POST  = filter_input_array(INPUT_POST, FILTER_SANITIZE_STRING);
 error_reporting(E_ERROR);
 ini_set('display_errors',1);
 require_once 'scripts/common.php';
+if (isset($_GET['deletefile'])) {
+  require_once __DIR__ . '/recording_delete.php';
+  delete_recording_request('file');
+}
 $home = get_home();
 $config = get_config();
 $user = get_user();
 
 $db = new SQLite3('./scripts/birds.db', SQLITE3_OPEN_READONLY);
 $db->busyTimeout(1000);
-
-if(isset($_GET['deletefile'])) {
-  ensure_authenticated('You must be authenticated to delete files.');
-  if (preg_match('~^.*(\.\.\/).+$~', $_GET['deletefile'])) {
-    echo "Error";
-    die();
-  }
-  $db_writable = new SQLite3('./scripts/birds.db', SQLITE3_OPEN_READWRITE);
-  $db->busyTimeout(1000);
-  $statement1 = $db_writable->prepare('DELETE FROM detections WHERE File_Name = :file_name LIMIT 1');
-  ensure_db_ok($statement1);
-  $statement1->bindValue(':file_name', explode("/", $_GET['deletefile'])[2]);
-  $file_pointer = $home."/BirdSongs/Extracted/By_Date/".$_GET['deletefile'];
-  if (!exec("sudo rm $file_pointer 2>&1 && sudo rm $file_pointer.png 2>&1", $output)) {
-    echo "OK";
-  } else {
-    echo "Error - file deletion failed : " . implode(", ", $output) . "<br>";
-  }
-  $result1 = $statement1->execute();
-  if ($result1 === false || $db_writable->changes() === 0) {
-    echo "Error - database line deletion failed : " . $db_writable->lastErrorMsg();
-  }
-  $db_writable->close();
-  die();
-}
 
 if(isset($_GET['excludefile'])) {
   ensure_authenticated('You must be authenticated to change the protection of files.');
@@ -168,26 +147,8 @@ if (get_included_files()[0] === __FILE__) {
 
 ?>
 <script src="static/custom-audio-player.js"></script>
+<script src="static/recording-delete.js"></script>
 <script>
-
-function deleteDetection(filename,copylink=false) {
-  if (confirm("Are you sure you want to delete this detection from the database?") == true) {
-    const xhttp = new XMLHttpRequest();
-    xhttp.onload = function() {
-      if(this.responseText == "OK"){
-        if(copylink == true) {
-          window.top.close();
-        } else {
-          location.reload();
-        }
-      } else {
-        alert(this.responseText);
-      }
-    }
-    xhttp.open("GET", "play.php?deletefile="+filename, true);
-    xhttp.send();
-  }
-}
 
 function toggleLock(filename, type, elem) {
   const xhttp = new XMLHttpRequest();
@@ -559,6 +520,7 @@ echo "<table>
     $time = $results['Time'];
     $values = round((float)round($results['Confidence'],2) * 100 ) . '%';
     $filename_formatted = $date."/".$comname."/".$results['File_Name'];
+    $delete_filename_js = htmlspecialchars(json_encode($filename_formatted), ENT_QUOTES, 'UTF-8');
 
     // file was deleted by disk check, no need to show the detection in recordings
     if(!file_exists($home."/BirdSongs/Extracted/".$filename)) {
@@ -603,7 +565,7 @@ echo "<table>
       echo "<tr>
   <td class=\"relative\"> 
 
-<img style='cursor:pointer;right:120px' src='images/delete.svg' onclick='deleteDetection(\"".$filename_formatted."\")' class=\"copyimage\" width=25 title='Delete Detection'> 
+<img style='cursor:pointer;right:120px' src='images/delete.svg' onclick='deleteDetection(".$delete_filename_js.")' class=\"copyimage\" width=25 title='Delete Detection'>
 <img style='cursor:pointer;right:85px' src='images/bird.svg' onclick='changeDetection(\"".$filename_formatted."\")' class=\"copyimage\" width=25 title='Change Detection'> 
 <img style='cursor:pointer;right:45px' onclick='toggleLock(\"".$filename_formatted."\",\"".$type."\", this)' class=\"copyimage\" width=25 title=\"".$title."\" src=\"".$imageicon."\"> 
 <img style='cursor:pointer' onclick='toggleShiftFreq(\"".$filename_formatted."\",\"".$shiftAction."\", this)' class=\"copyimage\" width=25 title=\"".$shiftTitle."\" src=\"".$shiftImageIcon."\"> $date $time<br>$values<br>
@@ -663,6 +625,7 @@ echo "<table>
         $time = $results['Time'];
         $values = round((float)round($results['Confidence'],2) * 100 ) . '%';
         $filename_formatted = $date."/".$comname."/".$results['File_Name'];
+        $delete_filename_js = htmlspecialchars(json_encode($filename_formatted), ENT_QUOTES, 'UTF-8');
 
         // add disk_check_exclude.txt lines into an array for grepping
         $fp = @fopen($home."/BirdNET-Pi/scripts/disk_check_exclude.txt", 'r');
@@ -696,7 +659,7 @@ echo "<table>
           echo "<tr>
       <td class=\"relative\"> 
 
-<img style='cursor:pointer;right:120px' src='images/delete.svg' onclick='deleteDetection(\"".$filename_formatted."\", true)' class=\"copyimage\" width=25 title='Delete Detection'> 
+<img style='cursor:pointer;right:120px' src='images/delete.svg' onclick='deleteDetection(".$delete_filename_js.", true)' class=\"copyimage\" width=25 title='Delete Detection'>
 <img style='cursor:pointer;right:85px' src='images/bird.svg' onclick='changeDetection(\"".$filename_formatted."\")' class=\"copyimage\" width=25 title='Change Detection'> 
 <img style='cursor:pointer;right:45px' onclick='toggleLock(\"".$filename_formatted."\",\"".$type."\", this)' class=\"copyimage\" width=25 title=\"".$title."\" src=\"".$imageicon."\"> 
 <img style='cursor:pointer' onclick='toggleShiftFreq(\"".$filename_formatted."\",\"".$shiftAction."\", this)' class=\"copyimage\" width=25 title=\"".$shiftTitle."\" src=\"".$shiftImageIcon."\">$date $time<br>$values<br>

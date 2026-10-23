@@ -49,6 +49,7 @@ let resolveRefresh = null;
 const context = {
   Promise,
   console,
+  window: {},
   document: { hidden: false },
   educatorScopeBlocked: false,
   effectiveEducatorScope: null,
@@ -174,6 +175,7 @@ const probeContext = {
   Number,
   Object,
   Array,
+  window: {},
   Date: { now() { return probeClock; } },
   document: { hidden: false },
   AUTOMATIC_EDUCATOR_SCOPE_ID: 'active',
@@ -763,5 +765,26 @@ assert.match(functionSource('refreshAll'),
 assert.match(apt,
   /document\.addEventListener\('visibilitychange',[\s\S]*cancelEducatorScopeRetry\(\)[\s\S]*stopPolling\(\)/,
   'visibility loss cancels scoped retry ownership before polling stops');
+
+probeContext.cancelEducatorScopeProbe(true);
+probeContext.document.hidden = false;
+probeContext.educatorScopeBlocked = false;
+probeContext.window.__avianFrameCapture = true;
+for (const [id, status] of [[cSaved, 'stopped'], [fSaved, 'saved']]) {
+  probeContext.explicitEducatorScope = probeContext.effectiveEducatorScope = { id, automatic: false, status };
+  assert.equal(probeContext.educatorScopeNeedsRealtimePolling(), false, 'frame snapshots do not poll');
+  assert.equal(probeContext.educatorScopeNeedsProbe(), false, 'frame snapshots do not probe saved scopes');
+  assert.equal(probeContext.scheduleEducatorScopeProbe(), false);
+  const before = probeRequests.length;
+  await probeContext.runEducatorScopeProbe(false);
+  await probeContext.runEducatorScopeProbe(true);
+  probeContext.syncRealtimePolling();
+  assert.equal(probeRequests.length, before, 'neither timed nor forced probes change a frame snapshot');
+  assert.equal(probeContext.educatorScopeProbeTimer, null);
+}
+probeContext.window.__avianFrameCapture = false;
+assert.equal(probeContext.educatorScopeNeedsProbe(), true, 'ordinary saved views still probe');
+assert.equal(probeContext.scheduleEducatorScopeProbe(), true);
+probeContext.cancelEducatorScopeProbe(true);
 
 console.log('Educator scope polling smoke: ok');

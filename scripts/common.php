@@ -322,7 +322,7 @@ class ImageProvider {
 
 class Flickr extends ImageProvider {
 
-  protected $db_path = __ROOT__ . '/scripts/flickr.db';
+  protected $db_path = '/var/lib/avian-visitors/image-cache/flickr.db';
 
   private $flickr_api_key = null;
   private $args = "&license=2%2C3%2C4%2C5%2C6%2C9&orientation=square,portrait";
@@ -447,7 +447,7 @@ class Flickr extends ImageProvider {
 
 class Wikipedia extends ImageProvider {
 
-  protected $db_path = __ROOT__ . '/scripts/wikipedia.db';
+  protected $db_path = '/var/lib/avian-visitors/image-cache/wikipedia.db';
 
   protected function get_from_source($sci_name) {
     $page_title = str_replace(' ', '_', $sci_name);

@@ -15,6 +15,13 @@ require_once __DIR__ . '/admin-auth.php';
 require_once __DIR__ . '/educator-state.php';
 require_once __DIR__ . '/educator-scope.php';
 
+$helperStat = @lstat('/usr/local/sbin/avian-admin-control');
+$installationRecovery = !is_array($helperStat)
+    || (($helperStat['mode'] ?? 0) & 0170000) !== 0100000
+    || (($helperStat['mode'] ?? 0) & 07777) !== 0755
+    || (int)($helperStat['uid'] ?? -1) !== 0
+    || (int)($helperStat['gid'] ?? -1) !== 0
+    || (int)($helperStat['nlink'] ?? 0) !== 1;
 $menuAction = (string)($_GET['action'] ?? '');
 
 if ($menuAction === 'lock') {
@@ -43,6 +50,7 @@ if ($menuAction === 'idle-lock') {
     echo json_encode([
         'ok' => true,
         'recovery' => empty($idleState['valid']) || empty($idleState['configured']),
+        'installation_recovery' => $installationRecovery,
     ] + avian_idle_lock_admin_session($_SERVER));
     exit;
 }
@@ -123,6 +131,7 @@ if ($passwordRequired
         'ok' => false,
         'error' => 'admin credential state is missing or invalid',
         'recovery' => true,
+        'installation_recovery' => $installationRecovery,
     ]);
     exit;
 }

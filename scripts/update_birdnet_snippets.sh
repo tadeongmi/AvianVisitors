@@ -6,27 +6,25 @@
 
 set -euo pipefail
 IFS=$'\n\t'
-PATH=/usr/sbin:/usr/bin:/sbin:/bin
+PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 [ "${EUID:-$(id -u)}" -eq 0 ] || { echo "update migration must run as root" >&2; exit 1; }
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-repo_dir=$(cd -- "$script_dir/.." && pwd -P)
-
-origin=$(git -C "$repo_dir" config --get remote.origin.url)
-case "$origin" in
-  https://github.com/tadeongmi/AvianVisitors|https://github.com/tadeongmi/AvianVisitors.git) ;;
-  *) echo "Refusing update from an unexpected origin" >&2; exit 1 ;;
-esac
-
-relative=scripts/reinstall_services.sh
-git -C "$repo_dir" ls-files --error-unmatch "$relative" >/dev/null
-git -C "$repo_dir" diff --quiet HEAD -- "$relative" \
-  || { echo "Service refresher differs from the checked-out commit" >&2; exit 1; }
-[ "$(git -C "$repo_dir" hash-object "$repo_dir/$relative")" = \
-  "$(git -C "$repo_dir" rev-parse "HEAD:$relative")" ] \
-  || { echo "Service refresher verification failed" >&2; exit 1; }
-
-install -o root -g root -m 0755 \
-  "$repo_dir/$relative" /usr/local/sbin/avian-service-refresh
-exec /usr/local/sbin/avian-service-refresh --legacy-migration
+# Never install root executables from the station-owned checkout, even when
+# its local Git index calls them clean. Fetch the bridge from the official tip.
+umask 077
+work_dir=$(mktemp -d /var/tmp/avian-legacy-bootstrap.XXXXXX)
+trap 'rm -rf "$work_dir"' EXIT
+trusted_repo=$work_dir/official.git
+mkdir "$trusted_repo"
+trusted_git() {
+  env -i HOME=/root GIT_CONFIG_GLOBAL=/dev/null PATH=/usr/local/bin:/usr/bin:/bin \
+    git -C "$trusted_repo" "$@"
+}
+trusted_git init --bare -q
+trusted_git fetch --no-tags https://github.com/tadeongmi/AvianVisitors.git \
+  refs/heads/avian-visitors:refs/heads/avian-visitors
+verified_head=$(trusted_git rev-parse --verify 'refs/heads/avian-visitors^{commit}')
+trusted_git show "$verified_head:scripts/bootstrap_v1.sh" >"$work_dir/bootstrap.sh"
+bash -n "$work_dir/bootstrap.sh"
+bash "$work_dir/bootstrap.sh"

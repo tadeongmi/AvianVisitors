@@ -292,6 +292,19 @@ function logs_for(string $control, string $unit, int $lines): array {
 
 switch ($action) {
 
+    case 'version': {
+        $rc = 0;
+        $raw = admin_control_output($ADMIN_CONTROL, ['release'], $rc);
+        $result = json_decode($raw, true);
+        if ($rc !== 0 || !is_array($result) || empty($result['ok']) || !is_string($result['release'] ?? null)) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => 'station version is unavailable']);
+        } else {
+            echo json_encode(['ok' => true, 'release' => $result['release']]);
+        }
+        break;
+    }
+
     case 'system': {
         echo json_encode([
             'uptime'      => read_uptime(),

@@ -14,7 +14,22 @@
   // with clean cutouts, so drop every cached copy.
   // Keep table and one-off art revisions separate from the library-wide
   // versions above. A corrected species should not evict every bird image.
-  var TABLE_VERSION = 'r15';
+  var TABLE_VERSION = 'r16';
+  var BUNDLE_ASSETS_MAX_BYTES = 32 * 1024 * 1024;
+  var BUNDLE_ASSETS_MAX_POSES = 10000;
+  var BUNDLE_SCIENTIFIC_SLUG_MAX = 163;
+  var INCLUDED_BUNDLE_ID = 'official-western-us-woodblock';
+  var INCLUDED_BUNDLE_VERSION = '1.0.0';
+  var INCLUDED_BUNDLE_REVISION = 'included-woodblock-v1';
+  var LEGACY_INCLUDED_CONTENT_REVISION = '0000000000000000000000000000000000000000000000000000000000000000';
+  var ACTIVE_BUNDLE = {
+    id: INCLUDED_BUNDLE_ID,
+    version: INCLUDED_BUNDLE_VERSION,
+    revision: INCLUDED_BUNDLE_REVISION,
+    contentRevision: LEGACY_INCLUDED_CONTENT_REVISION,
+    included: true,
+    name: 'Japanese Woodblock'
+  };
   var ART_REVISIONS = {
     'aphelocoma-woodhouseii': 'anatomy-1'
   };
@@ -416,6 +431,10 @@
   }
   function setEducatorDataLoading(loading) {
     educatorDataLoading = !!loading;
+    if (loading) {
+      var frameCollage = document.getElementById('collage');
+      if (frameCollage) frameCollage.removeAttribute('data-frame-token');
+    }
     document.body.classList.toggle('educator-data-loading', !!loading);
     var root = document.getElementById('views');
     if (root) {
@@ -893,7 +912,7 @@
       Object.keys(parsed).slice(0, 512).forEach(function (sci) {
         var name = sci.trim();
         var pose = +parsed[sci];
-        if (name && (pose === 1 || pose === 2)) preferences[name] = pose;
+        if (name && (Number.isInteger(pose) && pose >= 1 && pose <= 32)) preferences[name] = pose;
       });
     } catch (e) { }
     return preferences;
@@ -905,7 +924,7 @@
   function rememberPostcardPose(sci, pose) {
     var name = (sci || '').trim();
     pose = +pose;
-    if (!name || (pose !== 1 && pose !== 2)) return;
+    if (!name || (!Number.isInteger(pose) || pose < 1 || pose > 32)) return;
     postcardPosePreferences[name] = pose;
     writeLS(POSTCARD_POSE_STORAGE_KEY, JSON.stringify(postcardPosePreferences));
   }
@@ -1082,34 +1101,340 @@
   // rectangles touching - actual polygon-aware packing.
 
   var collage = document.getElementById('collage');
+  var collageRenderRevision = 0;
   // DIMS[slug]=[w,h] (aspect) and MASKS[slug]={w,h,bits} (1-bit silhouette)
-  // are built offline by scripts/build_masks.py and fetched from dims.json /
-  // masks.json at load. They live in their own files (one key per line) so a
-  // species-add is a clean diff and two contributors' additions don't collide,
-  // instead of rewriting one ~800KB line and conflicting on every merge.
+  // are built offline by scripts/build_masks.py. The active bundle endpoint
+  // returns both tables with the immutable identity that owns them, so geometry
+  // and cutout URLs always move together when the station changes bundles.
   var DIMS = {}, MASKS = {}, tablesReady = false;
   // Species drawn during this session. The atlas re-renders straight after a
   // generate and cutout.php sets a day of cache, so the fresh render needs its
   // own stamp to get past whatever the earlier 404 left behind.
   var justGenerated = {};
-  function loadTables(bust) {
-    // bust=true refetches past every cache - used after an on-Pi generate
-    // adds a species, so its mask becomes drawable without a reload.
+  var tableRequest = 0;
+  var tableLoadPromise = null;
+  var artworkRefreshRequest = 0;
+
+  function bundleRecord(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function bundleExactKeys(value, expected) {
+    if (!bundleRecord(value)) return false;
+    var actual = Object.keys(value).sort();
+    var wanted = expected.slice().sort();
+    return actual.length === wanted.length && actual.every(function (key, index) {
+      return key === wanted[index];
+    });
+  }
+
+  function bundleVersionValid(value) {
+    if (typeof value !== 'string' || value.length > 64 || /[\u0000-\u0020\u007f]/.test(value) ||
+      !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(value)) return false;
+    var prerelease = value.split('+', 1)[0].split('-', 2)[1];
+    return !prerelease || prerelease.split('.').every(function (part) {
+      return !/^[0-9]+$/.test(part) || part === '0' || part.charAt(0) !== '0';
+    });
+  }
+
+  function bundleIdentity(value, requireCounts) {
+    var keys = ['id', 'version', 'revision', 'included', 'name'];
+    var selected = bundleRecord(value) && Object.prototype.hasOwnProperty.call(value, 'selection_revision');
+    if (selected) keys.push('selection_revision');
+    if (requireCounts) keys = keys.concat(['content_revision', 'species_count', 'pose_count']);
+    if (!bundleExactKeys(value, keys) || typeof value.id !== 'string' ||
+      value.id.length > 80 || /[\u0000-\u001f\u007f]/.test(value.id) ||
+      !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(value.id) ||
+      !bundleVersionValid(value.version) || typeof value.included !== 'boolean' ||
+      typeof value.name !== 'string' || !value.name || value.name.length > 160 ||
+      /[\u0000-\u001f\u007f]/.test(value.name)) return null;
+    if (selected && (value.included || typeof value.selection_revision !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(value.selection_revision))) return null;
+    if (value.included) {
+      if (value.id !== INCLUDED_BUNDLE_ID || value.version !== INCLUDED_BUNDLE_VERSION ||
+        value.revision !== INCLUDED_BUNDLE_REVISION || value.name !== 'Japanese Woodblock') return null;
+    } else if (typeof value.revision !== 'string' || value.revision.length !== 64 ||
+      !/^[0-9a-f]{64}$/.test(value.revision)) {
+      return null;
+    }
+    if (requireCounts && (typeof value.content_revision !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(value.content_revision) ||
+      (!value.included && value.content_revision !== (value.selection_revision || value.revision)) ||
+      !Number.isSafeInteger(value.species_count) || value.species_count < 1 ||
+      value.species_count > BUNDLE_ASSETS_MAX_POSES || !Number.isSafeInteger(value.pose_count) ||
+      value.pose_count < value.species_count || value.pose_count > BUNDLE_ASSETS_MAX_POSES)) return null;
+    return value;
+  }
+
+  function expectedBundleIdentity(value) {
+    if (!bundleRecord(value)) return null;
+    var identity = {
+      id: value.id,
+      version: value.version,
+      revision: value.revision,
+      included: value.included,
+      name: value.name
+    };
+    if (Object.prototype.hasOwnProperty.call(value, 'selection_revision')) identity.selection_revision = value.selection_revision;
+    return bundleIdentity(identity, false);
+  }
+
+  function sameBundleIdentity(left, right) {
+    return !!left && !!right && left.id === right.id && left.version === right.version &&
+      left.revision === right.revision && left.selection_revision === right.selection_revision &&
+      left.included === right.included && left.name === right.name;
+  }
+
+  function boundedResponseText(response, maxBytes) {
+    var rawLength = response.headers && response.headers.get
+      ? response.headers.get('Content-Length') : null;
+    if (rawLength !== null && (!/^[0-9]+$/.test(rawLength) || +rawLength > maxBytes)) {
+      return Promise.reject(new Error('bundle assets response is too large'));
+    }
+    if (response.body && typeof response.body.getReader === 'function' && typeof TextDecoder === 'function') {
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder('utf-8', { fatal: true });
+      var total = 0;
+      var text = '';
+      function read() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) return text + decoder.decode();
+          if (!chunk.value || !Number.isSafeInteger(chunk.value.byteLength)) {
+            throw new Error('bundle assets response is invalid');
+          }
+          total += chunk.value.byteLength;
+          if (total > maxBytes) {
+            try {
+              var cancelled = reader.cancel();
+              if (cancelled && typeof cancelled.catch === 'function') cancelled.catch(function () { });
+            } catch (_) { }
+            throw new Error('bundle assets response is too large');
+          }
+          text += decoder.decode(chunk.value, { stream: true });
+          return read();
+        });
+      }
+      return read();
+    }
+    if (typeof response.arrayBuffer !== 'function' || typeof TextDecoder !== 'function') {
+      return Promise.reject(new Error('bundle assets response cannot be read safely'));
+    }
+    return response.arrayBuffer().then(function (buffer) {
+      if (!buffer || buffer.byteLength > maxBytes) throw new Error('bundle assets response is too large');
+      return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    });
+  }
+
+  function boundedResponseJson(response, maxBytes) {
+    return boundedResponseText(response, maxBytes).then(function (raw) {
+      try { return JSON.parse(raw); }
+      catch (_) { throw new Error('bundle assets response is invalid'); }
+    });
+  }
+
+  function validBundleTables(dims, masks, active) {
+    if (!bundleRecord(dims) || !bundleRecord(masks)) return false;
+    var dimKeys = Object.keys(dims).sort();
+    var maskKeys = Object.keys(masks).sort();
+    if (dimKeys.length !== active.pose_count || dimKeys.length !== maskKeys.length ||
+      dimKeys.some(function (key, index) { return key !== maskKeys[index]; })) return false;
+    var species = Object.create(null);
+    for (var i = 0; i < dimKeys.length; i++) {
+      var key = dimKeys[i];
+      var base = key.replace(/-(?:[2-9]|[12][0-9]|3[0-2])$/, '');
+      var dim = dims[key];
+      var mask = masks[key];
+      if (base.length > BUNDLE_SCIENTIFIC_SLUG_MAX || /[\u0000-\u001f\u007f]/.test(base) ||
+        !/^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(base) || !Array.isArray(dim) || dim.length !== 2 ||
+        !Number.isSafeInteger(dim[0]) || !Number.isSafeInteger(dim[1]) ||
+        dim[0] < 1 || dim[0] > 560 || dim[1] < 1 || dim[1] > 560 ||
+        !bundleExactKeys(mask, ['w', 'h', 'bits']) || !Number.isSafeInteger(mask.w) ||
+        !Number.isSafeInteger(mask.h) || mask.w < 1 || mask.w > 93 || mask.h < 1 || mask.h > 93 ||
+        typeof mask.bits !== 'string' || !mask.bits || mask.bits.length > 2048 ||
+        /[\u0000-\u0020\u007f]/.test(mask.bits) ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(mask.bits)) return false;
+      var decoded;
+      try { decoded = atob(mask.bits); } catch (_) { return false; }
+      if (decoded.length !== Math.ceil(mask.w * mask.h / 8)) return false;
+      var nonzero = false;
+      for (var bit = 0; bit < decoded.length; bit++) {
+        if (decoded.charCodeAt(bit) !== 0) { nonzero = true; break; }
+      }
+      if (!nonzero) return false;
+      species[base] = true;
+    }
+    return Object.keys(species).length === active.species_count;
+  }
+
+  function validateBundleAssets(value, expected) {
+    if (!bundleExactKeys(value, ['ok', 'active', 'dims', 'masks']) || value.ok !== true) {
+      throw new Error('bundle assets response is invalid');
+    }
+    var active = bundleIdentity(value.active, true);
+    if (!active || !validBundleTables(value.dims, value.masks, active)) {
+      throw new Error('bundle assets response is invalid');
+    }
+    if (expected && !sameBundleIdentity(active, expected)) {
+      throw new Error('bundle assets do not match the selected bundle');
+    }
+    return value;
+  }
+
+  function legacyIncludedTables(bust, expected) {
+    if (expected && !expected.included) {
+      return Promise.reject(new Error('bundle assets endpoint is required for downloaded bundles'));
+    }
     var q = '?v=' + TABLE_VERSION + (bust ? '&t=' + Date.now() : '');
     return Promise.all([
-      fetch('./dims.json' + q).then(function (r) { return r.json(); }),
-      fetch('./masks.json' + q).then(function (r) { return r.json(); })
-    ]).then(function (loaded) {
-      DIMS = loaded[0];
-      MASKS = loaded[1];
+      fetch('./dims.json' + q, { method: 'GET', credentials: 'same-origin', cache: bust ? 'no-store' : 'default' })
+        .then(function (response) {
+          if (!response.ok) throw new Error('included dimensions are unavailable');
+          return boundedResponseJson(response, 8 * 1024 * 1024);
+        }),
+      fetch('./masks.json' + q, { method: 'GET', credentials: 'same-origin', cache: bust ? 'no-store' : 'default' })
+        .then(function (response) {
+          if (!response.ok) throw new Error('included masks are unavailable');
+          return boundedResponseJson(response, 8 * 1024 * 1024);
+        })
+    ]).then(function (tables) {
+      var species = Object.create(null);
+      Object.keys(tables[0]).forEach(function (key) {
+        species[/-2$/.test(key) ? key.slice(0, -2) : key] = true;
+      });
+      return validateBundleAssets({
+        ok: true,
+        active: {
+          id: INCLUDED_BUNDLE_ID,
+          version: INCLUDED_BUNDLE_VERSION,
+          revision: INCLUDED_BUNDLE_REVISION,
+          content_revision: LEGACY_INCLUDED_CONTENT_REVISION,
+          included: true,
+          name: 'Japanese Woodblock',
+          species_count: Object.keys(species).length,
+          pose_count: Object.keys(tables[0]).length
+        },
+        dims: tables[0],
+        masks: tables[1]
+      }, expected);
+    });
+  }
+
+  var tableStartupRetryTimer = null;
+  var tableStartupRetryStep = 0;
+  var TABLE_STARTUP_RETRY_DELAYS = [250, 750, 1500, 3000, 5000, 10000, 30000];
+
+  function stopTableStartupRetry() {
+    if (tableStartupRetryTimer !== null) {
+      clearTimeout(tableStartupRetryTimer);
+      tableStartupRetryTimer = null;
+    }
+    tableStartupRetryStep = 0;
+  }
+
+  function scheduleTableStartupRetry(immediate) {
+    if (tablesReady || tableStartupRetryTimer !== null) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    var delay = immediate ? 0 : TABLE_STARTUP_RETRY_DELAYS[
+      Math.min(tableStartupRetryStep++, TABLE_STARTUP_RETRY_DELAYS.length - 1)
+    ];
+    tableStartupRetryTimer = setTimeout(function () {
+      tableStartupRetryTimer = null;
+      if (tablesReady) return;
+      // A Settings selection may have started since this retry was queued.
+      // Let that exact-identity load settle before attempting an unscoped
+      // startup recovery so the retry cannot race it for ownership.
+      var observedLoad = tableLoadPromise;
+      return Promise.resolve(observedLoad).then(function () {
+        if (tablesReady) return true;
+        if (tableLoadPromise !== observedLoad) {
+          scheduleTableStartupRetry(false);
+          return false;
+        }
+        return loadTablesAtStartup();
+      });
+    }, delay);
+  }
+
+  function loadTablesAtStartup() {
+    return loadTables().then(function (loaded) {
+      if (loaded) stopTableStartupRetry();
+      else scheduleTableStartupRetry(false);
+      return loaded;
+    });
+  }
+
+  function loadTables(bust, expectedActive) {
+    // bust=true refetches past every cache after included-bundle generation or
+    // after the bundle manager atomically activates a new immutable revision.
+    var request = ++tableRequest;
+    var expected = expectedActive === undefined ? null : expectedBundleIdentity(expectedActive);
+    if (expectedActive !== undefined && !expected) {
+      return Promise.reject(new Error('selected bundle identity is invalid'));
+    }
+    var q = '?v=' + TABLE_VERSION + (bust ? '&t=' + Date.now() : '');
+    var load = fetch('./avian/api/bundle-assets.php' + q, {
+      method: 'GET', credentials: 'same-origin', cache: bust ? 'no-store' : 'default'
+    }).then(function (response) {
+      if (response.status === 404) {
+        var absent = new Error('bundle assets endpoint is unavailable');
+        absent.bundleStatus = 404;
+        throw absent;
+      }
+      if (!response.ok) throw new Error('active bundle assets are unavailable');
+      var contentType = response.headers && response.headers.get
+        ? response.headers.get('Content-Type') : '';
+      if (!/^application\/json(?:\s*;|$)/i.test(contentType || '')) {
+        throw new Error('bundle assets response is invalid');
+      }
+      return boundedResponseJson(response, BUNDLE_ASSETS_MAX_BYTES)
+        .then(function (value) { return validateBundleAssets(value, expected); });
+    }).catch(function (error) {
+      // A 404 is the one staged-update case where an older station can have
+      // this frontend before bundle-assets.php is linked. Only the included
+      // bundle may use its historical same-origin tables; every other failure
+      // stays closed so external geometry and artwork can never be mixed.
+      if (error && error.bundleStatus === 404 && (!expected || expected.included)) {
+        return legacyIncludedTables(bust, expected);
+      }
+      throw error;
+    });
+    var result = load.then(function (loaded) {
+      if (request !== tableRequest) {
+        // A later request owns the commit. If it is loading the same exact
+        // immutable identity, wait for it rather than reporting a false
+        // failure to the Settings selection that this request belongs to.
+        var newer = tableLoadPromise;
+        if (!expected || !newer || newer === result) return false;
+        return newer.then(function () {
+          return tablesReady && sameBundleIdentity(ACTIVE_BUNDLE, expected);
+        });
+      }
+      ACTIVE_BUNDLE = {
+        id: loaded.active.id,
+        version: loaded.active.version,
+        revision: loaded.active.revision,
+        contentRevision: loaded.active.content_revision,
+        included: loaded.active.included,
+        name: loaded.active.name
+      };
+      if (loaded.active.selection_revision) ACTIVE_BUNDLE.selection_revision = loaded.active.selection_revision;
+      DIMS = loaded.dims;
+      MASKS = loaded.masks;
       maskCache = {};
+      if (typeof POSTCARD_POSE_CACHE !== 'undefined') POSTCARD_POSE_CACHE = Object.create(null);
       tablesReady = true;
+      stopTableStartupRetry();
       // renderCollage defers its first pack until the silhouettes exist (see
       // the tablesReady gate); render now that they are here. The atlas needs
       // the same nudge: which cards want a draw button is a question only
       // DIMS can answer, and it may have rendered before this landed.
       try { renderCollageFromData(); } catch (e) { }
       try { if (DATA.lifelist) renderAtlas(false); } catch (e) { }
+      try {
+        if (activePostcardSci && postcardModal && postcardModal.getAttribute('aria-hidden') !== 'true') {
+          populatePostcard(activePostcardSci, activePostcardEducatorScope);
+        }
+      } catch (e) { }
       return true;
     }).catch(function (e) {
       // Leave tablesReady false so renderCollage keeps waiting rather than
@@ -1117,8 +1442,48 @@
       if (window.console) console.error('collage: dims/masks failed to load', e);
       return false;
     });
+    tableLoadPromise = result;
+    return result;
   }
-  loadTables();
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        if (tableStartupRetryTimer !== null) {
+          clearTimeout(tableStartupRetryTimer);
+          tableStartupRetryTimer = null;
+        }
+      } else if (!tablesReady) {
+        scheduleTableStartupRetry(true);
+      }
+    });
+  }
+  loadTablesAtStartup();
+
+  function refreshBundleArtwork(expectedActive) {
+    var expected = expectedBundleIdentity(expectedActive);
+    if (!expected) return Promise.resolve(false);
+    var refreshRequest = ++artworkRefreshRequest;
+    var delays = [90, 180];
+    function attempt(index) {
+      return loadTables(true, expected).then(function (loaded) {
+        if (loaded || (tablesReady && sameBundleIdentity(ACTIVE_BUNDLE, expected))) return true;
+        if (refreshRequest !== artworkRefreshRequest || index >= delays.length) return false;
+        return new Promise(function (resolve) {
+          setTimeout(resolve, delays[index]);
+        }).then(function () { return attempt(index + 1); });
+      });
+    }
+    return attempt(0);
+  }
+
+  function activeArtRevision(sci, fallback) {
+    // Downloaded bundles are immutable, so their revision is the complete
+    // cache key. Included art can be generated or corrected in place and
+    // keeps its existing narrow per-species/version suffix.
+    return ACTIVE_BUNDLE.included
+      ? ACTIVE_BUNDLE.revision + '-' + ACTIVE_BUNDLE.contentRevision + '-' + artRevision(sci, fallback)
+      : ACTIVE_BUNDLE.contentRevision;
+  }
 
   function defaultCutoutSrc(sci, pose, version, commonName) {
     var base = './avian/api/cutout.php?sci=' + encodeURIComponent(sci);
@@ -1128,7 +1493,15 @@
     var com = commonName || (sp ? (sp.com || '') : '');
     if (com) base += '&com=' + encodeURIComponent(com);
     if (+pose > 1) base += '&pose=' + (+pose);
-    return base + '&v=' + artRevision(sci, version || SKETCH_VERSION);
+    var legacyIncluded = ACTIVE_BUNDLE.included &&
+      ACTIVE_BUNDLE.contentRevision === LEGACY_INCLUDED_CONTENT_REVISION;
+    if (!legacyIncluded) base += '&bundle=' + encodeURIComponent(ACTIVE_BUNDLE.revision);
+    base += '&v=' + encodeURIComponent(activeArtRevision(sci, version || SKETCH_VERSION));
+    if ((ACTIVE_BUNDLE.included && !legacyIncluded) || ACTIVE_BUNDLE.selection_revision) {
+      base += '&content=' + encodeURIComponent(ACTIVE_BUNDLE.contentRevision);
+    }
+    if (ACTIVE_BUNDLE.included && justGenerated[sci]) base += '&t=' + justGenerated[sci];
+    return base;
   }
 
   function collageImageSrc(sci, pose, commonName) {
@@ -2732,7 +3105,15 @@
     return placed;
   }
 
+  function finishFrameRender(items, count) {
+    if (!DATA || !DATA.recent || DATA.recent.species !== items || !DATA.recent.frame_capture_id) return;
+    collage.setAttribute('data-frame-count', count);
+    collage.setAttribute('data-frame-token', DATA.recent.frame_capture_id);
+  }
+
   function renderCollage(items, animate) {
+    collage.removeAttribute('data-frame-token');
+    collage.setAttribute('data-frame-revision', ++collageRenderRevision);
     collage.innerHTML = '';
     // Drop the previous render's hit-test tiles up front so a click or hover on
     // the empty-nest state (or a collage that hasn't laid out yet) resolves to
@@ -2757,15 +3138,17 @@
         clearTimeout(collageEntranceT);
         collageEntranceT = setTimeout(function () { enest.classList.remove('entering'); }, 900);
       }
+      finishFrameRender(items, 0);
       return;
     }
-    // Silhouettes (DIMS/MASKS) load async from dims.json/masks.json; until
-    // they arrive we cannot pack. Defer and retry, like the !W/!H case below.
-    // (The empty-nest path above needs no silhouettes and already returned.)
-    if (!tablesReady) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
-    if (labelsOn() && !labelFontReady) { setTimeout(function () { renderCollage(items, animate); }, 60); return; }
+    // Silhouettes (DIMS/MASKS) load asynchronously for the active bundle. The
+    // startup loader retries with a capped backoff and renders the latest data
+    // after success, so do not spin a 12.5 Hz render loop while an updater owns
+    // the generation lock. (The empty-nest path above needs no silhouettes.)
+    if (!tablesReady) return;
+    if (labelsOn() && !labelFontReady) { setTimeout(function () { renderCollageFromData(animate); }, 60); return; }
     var W = collage.clientWidth, H = collage.clientHeight;
-    if (!W || !H) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
+    if (!W || !H) { setTimeout(function () { renderCollageFromData(animate); }, 80); return; }
 
     // Tuning depends on bird count - same viewport, very different
     // pack densities for 6 vs 48 birds.
@@ -2919,7 +3302,7 @@
       btn.style.top = r.y + 'px';
       btn.style.width = r.fullW + 'px';
       btn.style.height = r.fullH + 'px';
-      btn.innerHTML = '<img loading="lazy" decoding="async" src="' + img + '" alt="' + s.com + '">';
+      btn.innerHTML = '<img loading="lazy" decoding="async" src="' + img + '" alt="' + escHtml(s.com) + '">';
       if (r.labelRows) {
         addLabelInk();
         // One baseline per line of the name, each riding the line the planner
@@ -2973,6 +3356,7 @@
     // (first load, window change, view switch) - never on the silent 30s
     // poll or a resize, which render without the animate flag.
     if (animate) playCollageEntrance();
+    if (placed.length && collagePlaced.length === placed.length) finishFrameRender(items, placed.length);
   }
 
   // Staggered centre-out entrance: each tile fades + scales in, delayed by
@@ -3186,8 +3570,8 @@
   // changes, refreshRecent() refetches and re-renders. Empty state shows
   // the shared "no detections heard in this window" message.
   function renderCollageFromData(animate) {
-    var items = (DATA.recent && DATA.recent.species) || [];
-    renderCollage(items, animate);
+    if (!DATA.recent || !Array.isArray(DATA.recent.species)) return;
+    renderCollage(DATA.recent.species, animate);
   }
   var rTimer;
   window.addEventListener('resize', function () {
@@ -5385,9 +5769,7 @@
       var win = winBySci[s.sci] || 0;
       var firstMs = Date.parse((s.first_seen || '').replace(' ', 'T'));
       var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMs;
-      var sketchSrc = './avian/api/cutout.php?sci=' + encodeURIComponent(s.sci) +
-        (s.com ? '&com=' + encodeURIComponent(s.com) : '') +
-        '&v=' + artRevision(s.sci, SKETCH_VERSION);
+      var sketchSrc = defaultCutoutSrc(s.sci, 1, SKETCH_VERSION, s.com);
       var detectionId = renderedScopeId
         ? educatorDetectionId(recentBySci[s.sci] && recentBySci[s.sci].detection_id)
         : null;
@@ -5402,12 +5784,11 @@
         + '<div><span class="n">' + fmtNK(total) + '</span><span class="lbl-inline">all time</span></div>';
       // Heard but never drawn: issue the bird's real family stamp with the
       // egg nest occupying its artwork plate. Waiting on tablesReady keeps
-      // a card from flashing the placeholder before dims.json lands.
+      // a card from flashing the placeholder before active geometry lands.
       var needsArt = tablesReady && !DIMS[slugify(s.sci)];
-      var fresh = justGenerated[s.sci] ? '&t=' + justGenerated[s.sci] : '';
       if (classic) {
         var common = s.com || s.sci;
-        var imageSrc = needsArt ? './nest-eggs.webp' : sketchSrc + fresh;
+        var imageSrc = needsArt ? './nest-eggs.webp' : sketchSrc;
         var birdWiki = wikiUrl(s.sci);
         var birdEbird = ebirdUrl(s.sci);
         return ''
@@ -5445,13 +5826,12 @@
       };
       var renderKey = [s.sci, s.com || '', accession[s.sci] || 0, total,
         renderedScopeId, renderedScopeRevision, renderedStateKey, renderedStateRevision,
-        detectionId || '', needsArt ? 'todo' : 'stamp', fresh,
-        artRevision(s.sci, SKETCH_VERSION)].join('|');
+        detectionId || '', needsArt ? 'todo' : 'stamp', sketchSrc].join('|');
       // Keep the Atlas issue itself as one clean click target. Generation lives
       // in the postcard's pose-control slot, where its cost and resulting state
       // change have enough context; no badge competes with the family artwork.
       var inner = window.STAMPS
-        ? window.STAMPS.markup(bird, needsArt ? './nest-eggs.webp' : sketchSrc + fresh)
+        ? window.STAMPS.markup(bird, needsArt ? './nest-eggs.webp' : sketchSrc)
         : '';
       return ''
         + '<article class="bird-card stamp-card' + (needsArt ? ' needs-art' : '') + '"'
@@ -5645,12 +6025,22 @@
     function tolerate(fetching) {
       return transactional ? fetching : fetching.catch(function () { return null; });
     }
+    var recent = scopedFetchJson('recent', { hours: forHours }, request).then(function (data) {
+      if (!data || !Array.isArray(data.species)) throw new Error('invalid recent detections');
+      if (!window.__avianFrameCapture && !transactional && request.generation === educatorScopeGeneration
+        && !educatorScopeId() && forHours === currentHours) {
+        DATA.recent = data;
+        if (typeof data.site_name === 'string') applySiteName(data.site_name);
+        renderCollageFromData(animate);
+      }
+      return data;
+    });
     return Promise.all([
       liveStats ? tolerate(scopedFetchJson('stats', {}, request)) : Promise.resolve(null),
       tolerate(scopedFetchJson('lifelist', {}, request)),
       tolerate(scopedFetchJson('timeseries', { days: 30 }, request)),
       liveStats ? tolerate(scopedFetchJson('firstseen', { limit: 10 }, request)) : Promise.resolve(null),
-      tolerate(scopedFetchJson('recent', { hours: forHours }, request)),
+      tolerate(recent),
       liveStats ? tolerate(scopedFetchJson('rhythm', { hours: forHours }, request)) : Promise.resolve(null),
       liveStats ? tolerate(scopedFetchJson('hourly', {}, request)) : Promise.resolve(null),
       calendarNeeded ? tolerate(scopedFetchJson('calendar', {}, request)) : Promise.resolve(null),
@@ -5730,14 +6120,14 @@
   var educatorScopeProbeSnapshot = null;
   var educatorScopeProbeFastUntil = 0;
   function educatorScopeNeedsRealtimePolling() {
-    if (educatorScopeBlocked) return false;
+    if (window.__avianFrameCapture || educatorScopeBlocked) return false;
     if (!effectiveEducatorScope) return true;
     if (effectiveEducatorScope.automatic) return true;
     return effectiveEducatorScope.status === 'running';
   }
   function educatorScopeNeedsProbe() {
     var scopeId = educatorRequestScopeId();
-    return !educatorScopeBlocked && !!effectiveEducatorScope
+    return !window.__avianFrameCapture && !educatorScopeBlocked && !!effectiveEducatorScope
       && !effectiveEducatorScope.automatic && validEducatorId(scopeId)
       && !educatorScopeNeedsRealtimePolling();
   }
@@ -5899,7 +6289,8 @@
   }
   function runPeriodicRefresh(force) {
     force = !!force;
-    if (document.hidden || (!force && !educatorScopeNeedsRealtimePolling())) {
+    // A frame capture keeps one snapshot, even when capture takes over 30 seconds.
+    if (window.__avianFrameCapture || document.hidden || (!force && !educatorScopeNeedsRealtimePolling())) {
       return Promise.resolve(false);
     }
     if (periodicRefreshInFlight) {
@@ -6299,7 +6690,21 @@
     return '';
   }
 
-  function showAdminLocked(message, recovery, revealDrawer) {
+  function setAdminLockHint(message, recovery, installationRecovery) {
+    if (installationRecovery) {
+      lockHint.textContent = 'Admin installation is incomplete or unsafe. Over SSH, run the verified setup in ';
+      var link = document.createElement('a');
+      link.href = 'https://github.com/Twarner491/AvianVisitors#updating-an-existing-station';
+      link.textContent = 'the installation recovery instructions';
+      lockHint.appendChild(link);
+      return;
+    }
+    lockHint.textContent = recovery
+      ? 'Admin password is missing or invalid. Over SSH, run sudo /usr/local/sbin/avian-admin-control password-reset.'
+      : (typeof message === 'string' ? message : 'Your admin session expired. Unlock to continue.');
+  }
+
+  function showAdminLocked(message, recovery, revealDrawer, installationRecovery) {
     var wasAdminOn = document.body.classList.contains('admin-on');
     var previousAdminSect = adminSect;
     var focusBeforeLock = document.activeElement;
@@ -6378,9 +6783,7 @@
     }
     locked.style.display = '';
     if (wasAdminOn) queueVisibleAtlasPack();
-    lockHint.textContent = recovery
-      ? 'Admin password is missing or invalid. Over SSH, run sudo /usr/local/sbin/avian-admin-control password-reset.'
-      : (typeof message === 'string' ? message : 'Your admin session expired. Unlock to continue.');
+    setAdminLockHint(message, recovery, installationRecovery);
     lockHint.classList.toggle('lock-err', !!lockHint.textContent);
     if (sharedPublicFocus && scopeReturnBeforeLock && !scopeReturnBeforeLock.hidden) focusEl(scopeReturnBeforeLock);
     else restoreFocusAfterAdminLock(focusNeedsPublicHome, revealDrawer);
@@ -6533,7 +6936,7 @@
           || requestViewGeneration !== adminViewGeneration) {
           return cancelledAdminRequest('stale admin error response');
         }
-        showAdminLocked('Your admin session expired. Unlock to continue.', !!body.recovery);
+        showAdminLocked('Your admin session expired. Unlock to continue.', !!body.recovery, false, !!body.installation_recovery);
         signalAdminLock('Admin session expired. Unlock to continue.');
         tryAutoUnlock();
         return cancelledAdminRequest('admin session expired');
@@ -6610,7 +7013,7 @@
           return;
         }
         var message = 'Admin controls locked after 30 minutes of inactivity.';
-        showAdminLocked(message, !!result.recovery);
+        showAdminLocked(message, !!result.recovery, false, !!result.installation_recovery);
         signalAdminLock(message);
       }).catch(function () {
         if (idleAuthGeneration !== adminAuthGeneration
@@ -6676,7 +7079,7 @@
       if (r.status === 401) {
         return r.json().catch(function () { return {}; }).then(function (j) {
           if (probeGeneration !== adminUnlockProbeGeneration) return;
-          showAdminLocked('', !!j.recovery);
+          showAdminLocked('', !!j.recovery, false, !!j.installation_recovery);
         });
       }
     }).catch(function () { });
@@ -6730,9 +7133,7 @@
         });
       } else if (r.status === 401) {
         return r.json().catch(function () { return {}; }).then(function (body) {
-          lockHint.textContent = body.recovery
-            ? 'Admin password is missing or invalid. Over SSH, run sudo /usr/local/sbin/avian-admin-control password-reset.'
-            : 'Wrong password.';
+          setAdminLockHint('Wrong password.', !!body.recovery, !!body.installation_recovery);
           lockHint.classList.add('lock-err');
           passInput.focus();
         });
@@ -8659,11 +9060,7 @@
     var sp = ((DATA.lifelist && DATA.lifelist.species) || [])
       .find(function (s) { return s.sci === sci; });
     var com = sp ? (sp.com || '') : '';
-    var base = './avian/api/cutout.php?sci=' + encodeURIComponent(sci) +
-      (com ? '&com=' + encodeURIComponent(com) : '') +
-      '&v=' + artRevision(sci, SKETCH_VERSION);
-    var n = +pose || 1;
-    return n > 1 ? base + '&pose=' + n : base;
+    return defaultCutoutSrc(sci, +pose || 1, SKETCH_VERSION, com);
   }
   // ---- On-demand generation (atlas modal) ----
   // The generate button appears only for species with no illustration
@@ -8748,7 +9145,10 @@
     stillThere = stillThere || function () { return document.body.contains(btn); };
     onDone = onDone || function () {
       delete POSTCARD_POSE_CACHE[sci];
-      loadTables(true);
+      // The worker writes its success state just before exiting and releasing
+      // the generation lock. Reuse the bounded refresh retry so the new table
+      // nonce is loaded before any revision-bound PNG URL is constructed.
+      refreshBundleArtwork(ACTIVE_BUNDLE);
     };
     if (adminAccessState !== 'unlocked') {
       genBtnState(btn, 'unlock in menu to generate', false);
@@ -8801,14 +9201,12 @@
         var img = document.getElementById('modalImg');
         var artwork = document.getElementById('modalArtwork');
         var poseToggle = document.getElementById('modalPoseToggle');
-        var freshness = justGenerated[sci] || Date.now();
-        var generatedSrc = sketchSrc(sci, 2) + '&t=' + freshness;
         btn.hidden = true;
         if (artwork) artwork.setAttribute('data-art-state', 'loading');
         if (img) img.classList.add('is-loading');
-        decodePostcardImage(generatedSrc).then(function (ok) {
+        refreshBundleArtwork(ACTIVE_BUNDLE).then(function (loaded) {
           if (request !== POSTCARD_IMAGE_REQUEST || !img) return;
-          if (!ok) {
+          if (!loaded) {
             if (artwork) artwork.setAttribute('data-art-state', 'fallback');
             img.src = './nest-eggs.webp';
             img.dataset.sci = sci;
@@ -8816,25 +9214,34 @@
             img.classList.remove('is-loading');
             return;
           }
-          img.src = generatedSrc;
-          img.dataset.sci = sci;
-          img.alt = sci;
-          rememberPostcardPose(sci, 2);
-          if (artwork) artwork.setAttribute('data-art-state', 'ready');
-          if (poseToggle) {
-            poseToggle.removeAttribute('data-unavailable');
-            [].slice.call(poseToggle.querySelectorAll('button')).forEach(function (poseBtn) {
-              poseBtn.removeAttribute('data-unavailable');
-              poseBtn.setAttribute('aria-current', poseBtn.dataset.pose === '2' ? 'true' : 'false');
+          var generatedSrc = sketchSrc(sci, 2);
+          decodePostcardImage(generatedSrc).then(function (ok) {
+            if (request !== POSTCARD_IMAGE_REQUEST || !img) return;
+            if (!ok) {
+              if (artwork) artwork.setAttribute('data-art-state', 'fallback');
+              img.src = './nest-eggs.webp';
+              img.dataset.sci = sci;
+              img.alt = 'Nest with eggs, bird illustration temporarily unavailable for ' + sci;
+              img.classList.remove('is-loading');
+              return;
+            }
+            img.src = generatedSrc;
+            img.dataset.sci = sci;
+            img.alt = sci;
+            rememberPostcardPose(sci, 2);
+            if (artwork) artwork.setAttribute('data-art-state', 'ready');
+            if (poseToggle) {
+              poseToggle.removeAttribute('data-unavailable');
+              [].slice.call(poseToggle.querySelectorAll('button')).forEach(function (poseBtn) {
+                poseBtn.removeAttribute('data-unavailable');
+                poseBtn.setAttribute('aria-current', poseBtn.dataset.pose === '2' ? 'true' : 'false');
+              });
+              syncPill(poseToggle);
+            }
+            requestAnimationFrame(function () {
+              if (request === POSTCARD_IMAGE_REQUEST) img.classList.remove('is-loading');
             });
-            syncPill(poseToggle);
-          }
-          requestAnimationFrame(function () {
-            if (request === POSTCARD_IMAGE_REQUEST) img.classList.remove('is-loading');
           });
-        });
-        loadTables(true).then(function (loaded) {
-          if (!loaded) return;
           var grid = document.getElementById('atlasGrid');
           requestAnimationFrame(function () {
             if (window.FX && grid) window.FX.run(grid);
@@ -9029,8 +9436,37 @@
     });
   }
 
+  var legacyPostcardPoseButtons = document.getElementById('modalPoseToggle').innerHTML;
+  function configurePostcardChoices(sci) {
+    var toggle = document.getElementById('modalPoseToggle');
+    var slug = slugify(sci);
+    var choices = [];
+    for (var number = 1; number <= 32; number++) {
+      if (DIMS[slug + (number > 1 ? '-' + number : '')]) choices.push(number);
+    }
+    var variants = choices.some(function (number) { return number > 2; })
+      || ACTIVE_BUNDLE.id === 'official-birds-of-america';
+    toggle.classList.toggle('has-variants', variants);
+    toggle.setAttribute('aria-label', variants ? 'Illustration' : 'Pose');
+    if (!variants) {
+      toggle.innerHTML = legacyPostcardPoseButtons;
+    } else {
+      toggle.innerHTML = '<i class="seg-pill" aria-hidden="true"></i>';
+      choices.forEach(function (number) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.pose = String(number);
+        button.setAttribute('aria-label', 'Illustration ' + number);
+        button.textContent = String(number);
+        toggle.appendChild(button);
+      });
+    }
+    return [].slice.call(toggle.querySelectorAll('button'));
+  }
+
   function postcardPoseAvailability(sci, poseBtns) {
-    if (POSTCARD_POSE_CACHE[sci]) return Promise.resolve(POSTCARD_POSE_CACHE[sci]);
+    var cache = POSTCARD_POSE_CACHE;
+    if (cache[sci]) return Promise.resolve(cache[sci]);
     return Promise.all(poseBtns.map(function (b) {
       var pose = +b.dataset.pose;
       return fetch(sketchSrc(sci, pose), { method: 'HEAD', cache: 'no-store' })
@@ -9040,8 +9476,8 @@
       // Cache real availability, never a total transport failure. A temporary
       // offline/worker error may use the nest for this opening, but the next
       // postcard attempt should probe again rather than fossilize that miss.
-      if (results.some(function (result) { return result.ok; })) {
-        POSTCARD_POSE_CACHE[sci] = results;
+      if (cache === POSTCARD_POSE_CACHE && results.some(function (result) { return result.ok; })) {
+        cache[sci] = results;
       }
       return results;
     });
@@ -9075,8 +9511,10 @@
     var artwork = document.getElementById('modalArtwork');
     var genBtn = document.getElementById('modalGenerate');
     var poseToggle = document.getElementById('modalPoseToggle');
-    var poseBtns = [].slice.call(poseToggle.querySelectorAll('button'));
-    var needsArt = tablesReady && !DIMS[slugify(sci)];
+    var poseBtns = configurePostcardChoices(sci);
+    var speciesSlug = slugify(sci);
+    var needsArt = tablesReady && !DIMS[speciesSlug] && !DIMS[speciesSlug + '-2'];
+    var canGenerateArt = needsArt && ACTIVE_BUNDLE.included;
 
     // Reset the visual synchronously. A confirmed missing illustration is a
     // deliberate egg-nest state, not a failed image request; this also means
@@ -9088,8 +9526,8 @@
       b.setAttribute('aria-current', 'false');
     });
     if (genBtn) {
-      genBtn.hidden = !needsArt;
-      if (needsArt) genBtnState(genBtn,
+      genBtn.hidden = !canGenerateArt;
+      if (canGenerateArt) genBtnState(genBtn,
         adminAccessState === 'unlocked' ? 'generate image' : 'unlock in menu to generate',
         false);
     }
@@ -9121,12 +9559,14 @@
           if (result && result.ok) b.removeAttribute('data-unavailable');
           else b.setAttribute('data-unavailable', 'true');
         });
-        // Default to the highest-numbered available pose (in-flight if present,
-        // else perched). No readable pose gets a deterministic nest fallback.
+        // Numbered artwork starts at the first composition; legacy art prefers flight.
+        // No readable choice gets a deterministic nest fallback.
         var rememberedPose = rememberedPostcardPose(sci);
         var pick = available.find(function (candidate) {
           return candidate.pose === rememberedPose;
-        }) || available.slice().sort(function (a, b) { return b.pose - a.pose; })[0];
+        }) || available.slice().sort(function (a, b) {
+          return poseToggle.classList.contains('has-variants') ? a.pose - b.pose : b.pose - a.pose;
+        })[0];
         if (!pick) {
           poseToggle.setAttribute('data-unavailable', 'true');
           if (artwork) artwork.setAttribute('data-art-state', 'fallback');
@@ -9178,7 +9618,6 @@
     document.getElementById('modalSci').textContent = sci;
     var sciParts = sci.trim().split(/\s+/);
     var family = window.STAMPS && window.STAMPS.latinOf ? window.STAMPS.latinOf(sci) : '';
-    if (!family && window.STAMPS && window.STAMPS.familyOf) family = window.STAMPS.familyOf(sci);
     document.getElementById('modalFamily').textContent = family || '-';
     document.getElementById('modalGenus').textContent = sciParts[0] || '-';
     document.getElementById('modalSpecies').textContent = sciParts.slice(1).join(' ') || '-';
@@ -11674,6 +12113,7 @@
       discardPendingSettings();
       if (settingsInfoCleanup) settingsInfoCleanup();
       if (settingsAccessCleanup) settingsAccessCleanup();
+      if (window.AVIAN_BUNDLES) window.AVIAN_BUNDLES.unmount();
     }
     if (adminSect === 'educators' && section !== 'educators') {
       if (typeof stopEducatorCountObservation === 'function') {
@@ -11728,6 +12168,7 @@
       discardPendingSettings();
       if (settingsInfoCleanup) settingsInfoCleanup();
       if (settingsAccessCleanup) settingsAccessCleanup();
+      if (window.AVIAN_BUNDLES) window.AVIAN_BUNDLES.unmount();
     }
     if (previousAdminSect === 'educators') {
       if (typeof stopEducatorCountObservation === 'function') {
@@ -12000,12 +12441,18 @@
       && state.dependencies.sqlite3 && state.remote && state.remote.configured);
   }
 
+  function archiveRunningState(state) {
+    return !!(state && state.service
+      && ['active', 'activating', 'deactivating'].indexOf(state.service.active) !== -1);
+  }
+
   function archiveSettingsRow(initialState) {
-    var configured = archiveConfiguredState(initialState);
-    var enabled = configured && initialState.timer && initialState.timer.enabled === 'enabled';
+    var enabled = initialState && initialState.ok && initialState.timer && initialState.timer.enabled === 'enabled';
+    var open = enabled || archiveRunningState(initialState);
     var remoteName = initialState && initialState.remote && initialState.remote.name || 'gdrive';
     var archiveDetails = 'Back up completed days to Google Drive. Before first use, run rclone config on the Pi, name the remote '
-      + adminEsc(remoteName) + ', choose drive.file, then return here and use the button beside the command.';
+      + adminEsc(remoteName) + ', choose drive.file, then return here and use the button beside the command. '
+      + 'Turning this off stops future backups. Use stop backup to end a running backup. Files already in Drive stay there.';
     return ''
       + '<div class="archive-settings-control" data-archive-control aria-busy="' + (initialState ? 'false' : 'true') + '">'
       + '  <div class="menu-row archive-settings-head">'
@@ -12013,13 +12460,13 @@
       + settingsInfoMarkup('archiveBackupTip', 'About Nightly Drive backup', archiveDetails)
       + '    </div>'
       + '    <div class="archive-settings-head-actions">'
-      + '      <button type="button" class="settings-disclosure" data-archive-disclosure aria-controls="archiveSettingsDetails" aria-expanded="' + (enabled ? 'true' : 'false') + '">details</button>'
+      + '      <button type="button" class="settings-disclosure" data-archive-disclosure aria-controls="archiveSettingsDetails" aria-expanded="' + (open ? 'true' : 'false') + '">details</button>'
       + '      <button type="button" class="switch" role="switch" data-archive-toggle aria-label="Nightly Drive backup" aria-describedby="archiveBackupTip" aria-checked="' + (enabled ? 'true' : 'false') + '"></button>'
       + '    </div>'
       + '  </div>'
       + '  <div id="archiveSettingsDetails" class="birdweather-details-shell archive-details-shell" data-archive-details-shell'
-      + '    data-open="' + (enabled ? 'true' : 'false') + '" data-settled="' + (enabled ? 'true' : 'false') + '"'
-      + '    aria-hidden="' + (enabled ? 'false' : 'true') + '"' + (enabled ? '' : ' hidden inert') + '>'
+      + '    data-open="' + (open ? 'true' : 'false') + '" data-settled="' + (open ? 'true' : 'false') + '"'
+      + '    aria-hidden="' + (open ? 'false' : 'true') + '"' + (open ? '' : ' hidden inert') + '>'
       + '    <div class="archive-settings-details" data-archive-details></div>'
       + '  </div>'
       + '</div>';
@@ -12037,7 +12484,8 @@
     var archiveNotice = initialState && initialState.error || '';
     var archiveNoticeAction = archiveNotice ? 'refresh' : '';
     var archiveNoticeError = !!archiveNotice;
-    var archiveOpen = !!(archiveState && archiveState.timer && archiveState.timer.enabled === 'enabled');
+    var archiveOpen = !!(archiveState && archiveState.timer && archiveState.timer.enabled === 'enabled')
+      || archiveRunningState(archiveState);
     var archiveBusy = false;
     var archiveBusyAction = '';
     var archiveSequence = 0;
@@ -12139,7 +12587,16 @@
     function archiveDetail(state) {
       var configured = archiveConfiguredState(state);
       if (!configured && !archiveOpen) return '';
+      var enabled = state && state.timer && state.timer.enabled === 'enabled';
+      var running = archiveRunningState(state);
+      var stopping = running && state.service.active === 'deactivating';
       var inner = '<div class="archive-detail' + (configured ? ' is-controls' : '') + '">';
+      if (!enabled && running) inner += '<p>Nightly backup is off. The current backup is still running.</p>';
+      if (running) {
+        inner += archiveActionRow('<button type="button" class="archive-button quiet" data-archive-action="stop"'
+          + (archiveBusy || stopping ? ' disabled' : '') + '>'
+          + (stopping || archiveBusyAction === 'stop' ? 'stopping...' : 'stop backup') + '</button>', 'stop');
+      }
       if (!state) {
         if (archiveFailureKind === 'helper') {
           inner += '<p>Refresh the archive helper after updating.</p>'
@@ -12179,8 +12636,6 @@
             : '')
           + '</div>';
       } else {
-        var enabled = state.timer && state.timer.enabled === 'enabled';
-        var running = state.service && (state.service.active === 'active' || state.service.active === 'activating');
         inner += '<div class="archive-run-row">'
           + '<button type="button" class="archive-button quiet archive-run-button" data-archive-action="run"'
           + (running || archiveBusy ? ' disabled' : '') + '>' + (running ? 'running...' : 'run now') + '</button>'
@@ -12191,7 +12646,9 @@
             state.purge ? 'purge-off' : 'purge-on', archiveBusy || running || !canPurge,
             'Run the archive once before enabling local cleanup.');
         }
-        if (archiveNoticeError) inner += '<div class="archive-command-error">' + adminEsc(archiveNotice) + '</div>';
+      }
+      if (state && archiveNoticeError && (configured || archiveNoticeAction === 'disable' || archiveNoticeAction === 'stop')) {
+        inner += '<div class="archive-command-error">' + adminEsc(archiveNotice) + '</div>';
       }
       return inner + '</div>';
     }
@@ -12236,8 +12693,7 @@
     });
 
     function paintArchive() {
-      var configured = archiveConfiguredState(archiveState);
-      var enabled = configured && archiveState.timer && archiveState.timer.enabled === 'enabled';
+      var enabled = archiveState && archiveState.timer && archiveState.timer.enabled === 'enabled';
       control.setAttribute('aria-busy', archiveBusy ? 'true' : 'false');
       mainSwitch.disabled = archiveBusy;
       mainSwitch.setAttribute('aria-checked', enabled ? 'true' : 'false');
@@ -12245,7 +12701,7 @@
       retentionControls(null, null, archiveBusy || enabled);
     }
 
-    function loadArchiveStatus() {
+    function loadArchiveStatus(afterDisable) {
       var request = ++archiveSequence;
       return adminFetch('./avian/api/archive.php', { credentials: 'same-origin', cache: 'no-store' })
         .then(function (response) {
@@ -12264,7 +12720,9 @@
               archiveNotice = '';
               archiveNoticeAction = '';
             }
-            paintArchive();
+            if (afterDisable && archiveRunningState(result)) {
+              openDetails(true);
+            } else paintArchive();
           });
         }).catch(function (error) {
           if (request !== archiveSequence || adminAuthCancelled(error)) return;
@@ -12289,7 +12747,7 @@
         : action === 'install' ? 'installing...'
           : action === 'enable' ? 'enabling...'
             : action === 'disable' ? 'disabling...'
-              : 'saving...';
+              : action === 'stop' ? 'stopping...' : 'saving...';
       paintArchive();
       var prepared = action === 'enable' || action === 'run';
       var timerWasEnabled = !!(archiveState && archiveState.timer && archiveState.timer.enabled === 'enabled');
@@ -12311,20 +12769,22 @@
         archiveNotice = action === 'run' ? 'started'
           : action === 'install' ? 'installed'
             : action === 'enable' ? 'enabled'
-              : action === 'disable' ? 'disabled' : 'saved';
+              : action === 'disable' ? 'disabled'
+                : action === 'stop' ? '' : 'saved';
         archiveNoticeError = false;
         if (action === 'enable' || action === 'install' || action === 'run') archiveOpen = true;
-        if (action === 'disable') archiveOpen = false;
+        if (action === 'disable') archiveOpen = archiveRunningState(result);
       }).catch(function (error) {
         if (adminAuthCancelled(error)) return;
         archiveNotice = error.message || 'archive action failed';
         archiveNoticeError = true;
+        if (action === 'disable' || action === 'stop') archiveOpen = true;
       }).then(function () {
         archiveBusy = false;
         archiveBusyAction = '';
         if (archiveOpen !== detailsAreOpen()) openDetails(archiveOpen);
         else paintArchive();
-        return loadArchiveStatus();
+        return loadArchiveStatus(action === 'disable');
       });
     }
 
@@ -12342,11 +12802,11 @@
     disclosure.addEventListener('click', function () { openDetails(!detailsAreOpen()); });
     mainSwitch.addEventListener('click', function () {
       if (archiveBusy) return;
-      if (!archiveConfiguredState(archiveState)) {
+      var enabled = archiveState && archiveState.timer && archiveState.timer.enabled === 'enabled';
+      if (!archiveState || !archiveState.installed || (!enabled && !archiveConfiguredState(archiveState))) {
         openDetails(true);
         return;
       }
-      var enabled = archiveState.timer && archiveState.timer.enabled === 'enabled';
       if (!enabled) openDetails(true);
       performArchiveAction(enabled ? 'disable' : 'enable');
     });
@@ -12385,9 +12845,16 @@
     adminPollT = setInterval(loadArchiveStatus, 10000);
   }
 
+  function stationVersionRow(version) {
+    var label = version && version.ok && typeof version.release === 'string' ? version.release : 'unavailable';
+    return '<div class="menu-row"><span class="label">Avian Visitors version</span>'
+      + '<span class="hint">' + adminEsc(label) + '</span></div>';
+  }
+
   function renderAdminSettings() {
     if (settingsInfoCleanup) settingsInfoCleanup();
     if (settingsAccessCleanup) settingsAccessCleanup();
+    if (window.AVIAN_BUNDLES) window.AVIAN_BUNDLES.unmount();
     adminBody.innerHTML = '<p style="font:11px ui-monospace,monospace;color:var(--ink-soft);text-align:center">loading settings...</p>';
     Promise.all([
       adminFetch('./avian/api/config.php', { credentials: 'same-origin', cache: 'no-store' })
@@ -12419,6 +12886,10 @@
           if (adminAuthCancelled(error)) throw error;
           return { ok: false, error: 'archive controls unavailable', failure_kind: 'network' };
         }),
+      adminJson('./avian/api/birdnet-status.php?action=version').catch(function (error) {
+        if (adminAuthCancelled(error)) throw error;
+        return null;
+      }),
     ])
       .then(function (parts) {
         var cfg = parts[0];
@@ -12450,13 +12921,14 @@
           '<div class="admin-settings">'
           + '<section>'
           + themeRow()
+          + (window.AVIAN_BUNDLES ? window.AVIAN_BUNDLES.rowMarkup() : '')
           + labelsRow()
           + atlasAlwaysAllRow()
           + atlasClassicRow()
           + settingsText('SITE_NAME', 'Station name', v.SITE_NAME || 'BirdNET-Pi', 60)
           + '</section><section>'
           + settingsSlider('CONFIDENCE', 'Confidence threshold', 'min score to log a detection', v.CONFIDENCE, 0.1, 0.95, 0.05, 2, 0.7)
-          + settingsSlider('SF_THRESH', 'Range filter', 'min likelihood a species is here this week', v.SF_THRESH, 0.001, 0.5, 0.001, 3, 0.03)
+          + settingsSlider('SF_THRESH', 'Range filter', 'min likelihood a species is here this week', v.SF_THRESH, 0.0005, 0.5, 0.0005, 4, 0.03)
           + settingsSlider('SENSITIVITY', 'Sensitivity', 'sigmoid slope on the classifier output', v.SENSITIVITY, 0.5, 1.5, 0.05, 2, 1.25)
           + settingsSlider('OVERLAP', 'Chunk overlap', 'seconds re-analyzed per pass', v.OVERLAP, 0, 2.5, 0.1, 1, 0.0)
           + settingsToggle('RESET_AT_MIDNIGHT', 'Reset at midnight', 'keep time windows inside the current day', !!v.RESET_AT_MIDNIGHT)
@@ -12475,6 +12947,7 @@
           ])
           + '</section>'
           + cutoutsNote
+          + '<section>' + stationVersionRow(parts[4]) + '</section>'
           + '<div class="menu-save-row">'
           + '  <span class="save-state" id="saveState"></span>'
           + '</div>'
@@ -12503,6 +12976,14 @@
         wireBirdweatherControl(adminBody, birdweather);
         wireArchiveControl(adminBody, archive);
         wireSettingsInfo(adminBody);
+        if (window.AVIAN_BUNDLES) {
+          window.AVIAN_BUNDLES.mount({
+            root: adminBody,
+            latitude: v.LATITUDE,
+            longitude: v.LONGITUDE,
+            refreshArtwork: function (active) { return refreshBundleArtwork(active); }
+          });
+        }
         if (pendingAdminNotice) {
           var noticeTarget = adminBody.querySelector('[data-lan-auth-status]');
           if (noticeTarget) {
@@ -12852,6 +13333,11 @@
         + (directRequired ? adminEsc(educatorSavedExportMessage()) : '') + '</span>'
         + '</a>';
     }
+    html += '<a class="admin-action" href="./avian/api/export.php?what=bundle" download>'
+      + '<span class="run">review &amp; download</span>'
+      + '<h4>Export bundle</h4>'
+      + '<p>Review your illustrations, then download one upload-ready ZIP.</p>'
+      + '</a>';
     html += dataCard('detections', 'every detection as csv: date, species, confidence, file', 'detections');
     html += dataCard('recordings', 'every clip as tar, by date and species. can run to many gb', 'recordings');
     html += '</div>';

@@ -2283,7 +2283,7 @@ document.documentElement.setAttribute('data-stamps-stage', 'fx-ready');
     Bubo:'Owls', Tyto:'Owls', Strix:'Owls', Megascops:'Owls', Athene:'Owls', Asio:'Owls',
     // hawks, eagles, falcons, vultures
     Buteo:'Hawks', Accipiter:'Hawks', Haliaeetus:'Hawks', Circus:'Hawks',
-    Falco:'Hawks', Cathartes:'Hawks', Elanus:'Hawks', Pandion:'Hawks',
+    Falco:'Falcons', Cathartes:'Hawks', Elanus:'Hawks', Pandion:'Hawks',
     // gulls and terns
     Larus:'Gulls', Chroicocephalus:'Gulls', Sterna:'Gulls', Hydroprogne:'Gulls',
     // kingfishers
@@ -2341,10 +2341,10 @@ document.documentElement.setAttribute('data-stamps-stage', 'fx-ready');
     Zenaidura:'Doves & Pigeons'
   };
 
-  /* Latin family per group, for the small taxonomic line some designs print. */
+  /* Legacy issue labels; mixed visual groups are not biological families. */
   var GROUP_LATIN = {
     'Hummingbirds':'Trochilidae', 'Crows & Jays':'Corvidae', 'Herons':'Ardeidae',
-    'Waterfowl':'Anatidae', 'Owls':'Strigidae', 'Hawks':'Accipitridae',
+    'Waterfowl':'Anatidae', 'Owls':'Strigidae', 'Hawks':'Accipitridae', 'Falcons':'Falconidae',
     'Gulls':'Laridae', 'Sparrows':'Passerellidae', 'Finches':'Fringillidae',
     'Doves & Pigeons':'Columbidae', 'Thrushes':'Turdidae', 'Flycatchers':'Tyrannidae',
     'Mockingbirds & Thrashers':'Mimidae', 'Waxwings':'Bombycillidae',
@@ -2352,6 +2352,57 @@ document.documentElement.setAttribute('data-stamps-stage', 'fx-ready');
     'Warblers & Vireos':'Parulidae', 'Kingfishers':'Alcedinidae',
     'Shorebirds':'Scolopacidae', 'Swallows':'Hirundinidae',
     'Treecreepers':'Certhiidae'
+  };
+
+  /* Biological families for reviewed genera, independent of visual groups.
+     IOC World Bird List v15.1 (2025), Gill, Donsker & Rasmussen (eds):
+     https://www.worldbirdnames.org/master_ioc-names_xml.15.1.xml */
+  var GENUS_LATIN = {
+    Calypte:'Trochilidae', Archilochus:'Trochilidae', Selasphorus:'Trochilidae',
+    Eugenes:'Trochilidae', Amazilia:'Trochilidae',
+    Corvus:'Corvidae', Aphelocoma:'Corvidae', Cyanocitta:'Corvidae',
+    Pica:'Corvidae', Gymnorhinus:'Corvidae', Nucifraga:'Corvidae',
+    Ardea:'Ardeidae', Egretta:'Ardeidae', Butorides:'Ardeidae',
+    Nycticorax:'Ardeidae', Botaurus:'Ardeidae', Nyctanassa:'Ardeidae',
+    Anas:'Anatidae', Aix:'Anatidae', Branta:'Anatidae', Anser:'Anatidae',
+    Aythya:'Anatidae', Bucephala:'Anatidae', Mergus:'Anatidae',
+    Lophodytes:'Anatidae', Oxyura:'Anatidae', Cygnus:'Anatidae',
+    Spatula:'Anatidae', Mareca:'Anatidae',
+    Bubo:'Strigidae', Tyto:'Tytonidae', Strix:'Strigidae',
+    Megascops:'Strigidae', Athene:'Strigidae', Asio:'Strigidae',
+    Buteo:'Accipitridae', Accipiter:'Accipitridae', Haliaeetus:'Accipitridae',
+    Circus:'Accipitridae', Falco:'Falconidae', Cathartes:'Cathartidae',
+    Elanus:'Accipitridae', Pandion:'Pandionidae',
+    Larus:'Laridae', Chroicocephalus:'Laridae', Sterna:'Laridae', Hydroprogne:'Laridae',
+    Megaceryle:'Alcedinidae', Charadrius:'Charadriidae',
+    Actitis:'Scolopacidae', Numenius:'Scolopacidae', Calidris:'Scolopacidae',
+    Tringa:'Scolopacidae', Limnodromus:'Scolopacidae',
+    Himantopus:'Recurvirostridae', Recurvirostra:'Recurvirostridae',
+    Pelecanus:'Pelecanidae', Phalacrocorax:'Phalacrocoracidae', Nannopterum:'Phalacrocoracidae',
+    Zonotrichia:'Passerellidae', Passer:'Passeridae', Melospiza:'Passerellidae',
+    Passerella:'Passerellidae', Pipilo:'Passerellidae', Melozone:'Passerellidae',
+    Junco:'Passerellidae', Spizella:'Passerellidae', Chondestes:'Passerellidae',
+    Ammodramus:'Passerellidae', Passerculus:'Passerellidae',
+    Haemorhous:'Fringillidae', Spinus:'Fringillidae', Carduelis:'Fringillidae',
+    Loxia:'Fringillidae', Pinicola:'Fringillidae', Coccothraustes:'Fringillidae',
+    Zenaida:'Columbidae', Columba:'Columbidae', Streptopelia:'Columbidae',
+    Columbina:'Columbidae', Patagioenas:'Columbidae',
+    Turdus:'Turdidae', Catharus:'Turdidae', Sialia:'Turdidae', Ixoreus:'Turdidae',
+    Sayornis:'Tyrannidae', Tyrannus:'Tyrannidae', Empidonax:'Tyrannidae',
+    Contopus:'Tyrannidae', Myiarchus:'Tyrannidae',
+    Mimus:'Mimidae', Toxostoma:'Mimidae', Oreoscoptes:'Mimidae',
+    Bombycilla:'Bombycillidae', Phainopepla:'Ptiliogonatidae',
+    Agelaius:'Icteridae', Icterus:'Icteridae', Euphagus:'Icteridae', Quiscalus:'Icteridae',
+    Molothrus:'Icteridae', Sturnella:'Icteridae', Sturnus:'Sturnidae', Xanthocephalus:'Icteridae',
+    Baeolophus:'Paridae', Poecile:'Paridae', Psaltriparus:'Aegithalidae', Sitta:'Sittidae',
+    Troglodytes:'Troglodytidae', Thryomanes:'Troglodytidae', Catherpes:'Troglodytidae',
+    Regulus:'Regulidae', Corthylio:'Regulidae', Chamaea:'Paradoxornithidae',
+    Certhia:'Certhiidae', Hirundo:'Hirundinidae', Tachycineta:'Hirundinidae',
+    Stelgidopteryx:'Hirundinidae', Petrochelidon:'Hirundinidae',
+    Setophaga:'Parulidae', Geothlypis:'Parulidae', Cardellina:'Parulidae', Vireo:'Vireonidae',
+    Piranga:'Cardinalidae', Pheucticus:'Cardinalidae', Passerina:'Cardinalidae', Cardinalis:'Cardinalidae',
+    Colaptes:'Picidae', Picoides:'Picidae', Dryobates:'Picidae', Melanerpes:'Picidae',
+    Callipepla:'Odontophoridae'
   };
 
   /* ---- One design language per family, so a family reads as one issue.
@@ -2374,6 +2425,7 @@ document.documentElement.setAttribute('data-stamps-stage', 'fx-ready');
     'Waterfowl':'linescreen',             // engraved plate, in the duck-stamp tradition
     'Sparrows':'field',
     'Hawks':'raptor',
+    'Falcons':'raptor',
     'Warblers & Vireos':'field'
   };
   function groupFor(sci) {
@@ -2391,8 +2443,8 @@ document.documentElement.setAttribute('data-stamps-stage', 'fx-ready');
   }
   function familyOf(sci) { return groupFor(sci) || 'Other'; }
   function latinOf(sci) {
-    var g = groupFor(sci);
-    return (g && GROUP_LATIN[g]) || '';
+    var genus = String(sci || '').split(' ')[0];
+    return Object.prototype.hasOwnProperty.call(GENUS_LATIN, genus) ? GENUS_LATIN[genus] : '';
   }
 
   /* ---- Every design is drawn at ONE natural width, because each one's

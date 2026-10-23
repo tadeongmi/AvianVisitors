@@ -55,10 +55,16 @@ if [[ ! -z $PACKAGES_MISSING ]] ; then
 fi
 
 branch=avian-visitors
-git clone -b $branch --depth=1 https://github.com/tadeongmi/AvianVisitors.git ${HOME}/BirdNET-Pi &&
+repository=https://github.com/tadeongmi/AvianVisitors.git
+install_dir="$HOME/BirdNET-Pi"
+if [ -e "$install_dir" ] || [ -L "$install_dir" ]; then
+  echo "Cannot resume automatically: $install_dir already exists and may contain an older installer that resets detections." >&2
+  echo "Do not delete it. Preserve your data and review the existing installation log before choosing a recovery path." >&2
+  exit 1
+fi
+git clone -b "$branch" --depth=1 "$repository" "$install_dir" || exit 1
 
-"$HOME/BirdNET-Pi/scripts/install_birdnet.sh" "${installer_args[@]}"
-if [ ${PIPESTATUS[0]} -eq 0 ];then
+if "$install_dir/scripts/install_birdnet.sh" "${installer_args[@]}"; then
   echo "Installation completed successfully"
   sudo reboot
 else

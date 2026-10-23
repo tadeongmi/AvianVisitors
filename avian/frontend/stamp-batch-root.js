@@ -11,7 +11,7 @@
     html: '<div class="face tpl-hawkink" style="--face:#e8dec7">' +
       '<div class="hi-field">' +
         '<canvas class="fxc hi-bird" data-fx="inkStamp" data-src="{{SRC}}" data-paper="./assets/stamp/paper-texture-grey.png" data-opt=\'{"fit":"bird","pad":0.008,"scale":1.075,"offsetX":0.025,"offsetY":0.025,"ink":"#18221d","lift":0.105,"contrast":1.24}\' aria-label="{{NAME}}"></canvas>' +
-        '<div class="hi-field-copy"><b>ACCIPITRIDAE</b><span>{{SCI}}</span></div>' +
+        '<div class="hi-field-copy"><b>{{ORDER}}</b><span>{{SCI}}</span></div>' +
         '<strong class="hi-imprint">AVIANVISITORS</strong>' +
       '</div>' +
       '<aside class="hi-rail">' +

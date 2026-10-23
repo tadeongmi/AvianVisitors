@@ -53,6 +53,7 @@ mkdir -p \
   "$fixture/birdnet/bin"
 cp avian/api/admin-auth.php "$fixture/avian/api/admin-auth.php"
 cp avian/api/admin-state.php "$fixture/avian/api/admin-state.php"
+cp avian/api/educator-state.php "$fixture/avian/api/educator-state.php"
 cp avian/api/generate.php "$fixture/avian/api/generate.php"
 
 printf 'GEMINI_API_KEY="%s"\n' "$test_key" >"$fixture/birdnet.conf"

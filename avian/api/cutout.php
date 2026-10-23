@@ -1,7 +1,9 @@
 <?php
 // AvianVisitors - bird image resolver.
 //
-// Lookup chain for /avian/api/cutout.php?sci=Calypte+anna:
+// With an external bundle revision, resolution is exact: that bundle's named
+// species and requested pose, or 404. The included Japanese Woodblock revision
+// keeps the legacy chain:
 //   1. ../assets/illustrations/<slug>.png   (333 bundled species, two poses each)
 //   2. ../assets/cutouts/<slug>.png         (background-removed photo)
 //   3. cached rembg of a Wikipedia photo at $HOME/BirdSongs/Extracted/cutouts/
@@ -24,7 +26,7 @@ if ($sci === '') {
 }
 // Binomial / trinomial pattern. Rejects path-traversal payloads and
 // junk before any filesystem or upstream lookup.
-if (!preg_match('/^[A-Za-z]{2,40}(?:[ ][a-z]{2,40}){1,3}$/', $sci)) {
+if (!preg_match('/\A[A-Z][A-Za-z-]{1,39}(?: [a-z][A-Za-z-]{1,39}){1,3}\z/D', $sci)) {
     http_response_code(400);
     echo 'invalid sci';
     exit;
@@ -34,18 +36,136 @@ if (!preg_match('/^[A-Za-z]{2,40}(?:[ ][a-z]{2,40}){1,3}$/', $sci)) {
 $slug = preg_replace('/[^a-z0-9]+/', '-', strtolower($sci));
 $slug = trim((string)$slug, '-');
 
-// pose=1 (default) is perched. pose=2 is flight. Clamp to a two-digit
-// positive integer so a malformed ?pose= can't break the path.
-$pose = (int)($_GET['pose'] ?? 1);
-if ($pose !== 2) $pose = 1;
+// Legacy bundles use 1/2 for perched/flight; historical bundles number choices.
+$poseValue = $_GET['pose'] ?? '1';
+if (!is_string($poseValue) || !preg_match('/\A(?:[1-9]|[12][0-9]|3[0-2])\z/D', $poseValue)) {
+    http_response_code(400);
+    exit("invalid illustration choice");
+}
+$pose = (int)$poseValue;
 $poseSuffix = $pose === 1 ? '' : "-$pose";
 
+require_once __DIR__ . '/bundle-runtime.php';
+$activeBundle = avian_bundle_active_state();
+if ($activeBundle['status'] !== 'ok') {
+    http_response_code(404);
+    echo 'active bundle unavailable';
+    exit;
+}
+$requestedRevision = $_GET['bundle'] ?? null;
+if ($requestedRevision !== null) {
+    if (!is_string($requestedRevision) || strlen($requestedRevision) > 80) {
+        http_response_code(404);
+        echo 'bundle revision is invalid';
+        exit;
+    }
+    $requestedContent = $_GET['content'] ?? null;
+    if ($requestedContent !== null && !is_string($requestedContent)) {
+        http_response_code(404);
+        exit('bundle content is invalid');
+    }
+    $artBundle = avian_bundle_state_for_revision($requestedRevision, $requestedContent);
+    if ($artBundle['status'] !== 'ok') {
+        http_response_code(404);
+        echo 'bundle revision is unavailable';
+        exit;
+    }
+} else {
+    $artBundle = $activeBundle;
+}
+
+$includedTableLock = null;
+if ($artBundle['included']) {
+    $includedTableLock = avian_bundle_open_included_table_read_lock();
+    if ($includedTableLock === false) {
+        header('Cache-Control: no-store');
+        http_response_code(503);
+        echo 'active bundle inventory is changing';
+        exit;
+    }
+    $contentRevision = avian_bundle_content_revision($artBundle, $includedTableLock);
+    if ($contentRevision === null) {
+        avian_bundle_close_included_table_read_lock($includedTableLock);
+        header('Cache-Control: no-store');
+        http_response_code(503);
+        echo 'active bundle inventory is unavailable';
+        exit;
+    }
+    // Revision-bound callers loaded a particular geometry snapshot. Never put
+    // newer mutable PNG bytes in that older URL's cache if generation or a
+    // local library update completed between the table and image requests.
+    if ($requestedRevision !== null) {
+        $requestedContent = $_GET['content'] ?? null;
+        if (!is_string($requestedContent)
+            || !avian_bundle_revision_valid($requestedContent)
+            || !hash_equals($contentRevision, $requestedContent)) {
+            avian_bundle_close_included_table_read_lock($includedTableLock);
+            header('Cache-Control: no-store');
+            http_response_code(409);
+            echo 'included bundle content changed';
+            exit;
+        }
+    }
+}
+
 function serve_png(string $path): void {
+    $stream = @fopen($path, 'rb');
+    $metadata = $stream === false ? false : fstat($stream);
+    if ($metadata === false || ($metadata['mode'] & 0170000) !== 0100000
+        || $metadata['size'] <= 0) {
+        if (is_resource($stream)) fclose($stream);
+        http_response_code(500);
+        header('Content-Type: text/plain');
+        echo 'illustration could not be read';
+        exit;
+    }
     header('Content-Type: image/png');
     header('Cache-Control: public, max-age=86400');
-    header('Content-Length: ' . (string)filesize($path));
-    readfile($path);
+    header('Content-Length: ' . (string)$metadata['size']);
+    fpassthru($stream);
+    fclose($stream);
     exit;
+}
+
+function serve_bundle_png($handle, array $stat, string $revision, string $digest): void {
+    header('Content-Type: image/png');
+    header('Cache-Control: public, max-age=31536000, immutable');
+    header('X-Content-Type-Options: nosniff');
+    header('ETag: "avian-bundle-' . $revision . '-' . $digest . '"');
+    header('Content-Length: ' . (string)$stat['size']);
+    fpassthru($handle);
+    fclose($handle);
+    exit;
+}
+
+// A selected external bundle is a complete visual boundary. Missing species
+// and missing poses intentionally return 404 so the collage omits them and the
+// Atlas keeps its existing no-art nest. Never mix in the included woodblock,
+// photos, cached cutouts, or Wikipedia artwork. The revision query binds this
+// image to the exact geometry inventory already loaded by the browser.
+if (!$artBundle['included']) {
+    if (!is_string($requestedRevision)
+        || !hash_equals($artBundle['revision'], $requestedRevision)) {
+        http_response_code(404);
+        echo 'bundle revision required';
+        exit;
+    }
+    $bundleIndex = avian_bundle_index_for_state($artBundle);
+    $bundleObject = $bundleIndex === null
+        ? null
+        : avian_bundle_resolve_object($bundleIndex, $slug, $pose);
+    $openedObject = $bundleObject === null ? null : avian_bundle_open_object($bundleObject);
+    if ($openedObject === null) {
+        http_response_code(404);
+        echo 'no artwork in active bundle for ' . htmlspecialchars($sci);
+        exit;
+    }
+    serve_bundle_png(
+        $openedObject[0],
+        $openedObject[1],
+        $artBundle['selection_revision'] ?? $artBundle['revision'],
+        $bundleObject['sha256']
+    );
 }
 
 // 1. Bundled illustration with pose suffix (the kachō-e PNG the repo
@@ -68,6 +188,8 @@ $cutout = dirname(__DIR__) . "/assets/cutouts/$slug.png";
 if (is_file($cutout) && filesize($cutout) > 1024) {
     serve_png($cutout);
 }
+
+avian_bundle_close_included_table_read_lock($includedTableLock);
 
 // 3. Dynamic cache from a previous Wikipedia + rembg run.
 $cacheDir = dirname(__DIR__, 3) . '/BirdSongs/Extracted/cutouts';
@@ -166,12 +288,19 @@ if (!$imgBytes || strlen($imgBytes) < 1024) {
 // rembg via the wrapper. u2netp = lightweight model (~50MB peak RAM -
 // matters on the Pi 3B+). Temp files because rembg's CLI prefers
 // real paths.
-$tmpInBase  = tempnam(sys_get_temp_dir(), 'rembg-in-');
-$tmpOutBase = tempnam(sys_get_temp_dir(), 'rembg-out-');
-@unlink($tmpInBase); @unlink($tmpOutBase);
-$tmpIn  = $tmpInBase  . '.jpg';
-$tmpOut = $tmpOutBase . '.png';
-file_put_contents($tmpIn, $imgBytes);
+$tmpIn = @tempnam($cacheDir, '.rembg-in-');
+$tmpOut = @tempnam($cacheDir, '.rembg-out-');
+// tempnam can fall back to the system temp directory on failure.
+if ($tmpIn === false || $tmpOut === false
+    || realpath(dirname($tmpIn)) !== realpath($cacheDir)
+    || realpath(dirname($tmpOut)) !== realpath($cacheDir)
+    || @file_put_contents($tmpIn, $imgBytes) !== strlen($imgBytes)) {
+    if ($tmpIn !== false) @unlink($tmpIn);
+    if ($tmpOut !== false) @unlink($tmpOut);
+    http_response_code(500);
+    echo 'could not stage cutout';
+    exit;
+}
 
 $cmd = sprintf(
     '%s i -m u2netp -ppm %s %s 2>&1',
@@ -194,32 +323,44 @@ if (!is_file($tmpOut) || filesize($tmpOut) < 1024) {
 // Tight-crop to the bird's bounding box + downscale to 800px max edge
 // so cache stays small.
 $im = @imagecreatefrompng($tmpOut);
-if ($im !== false) {
-    $cropped = @imagecropauto($im, IMG_CROP_TRANSPARENT);
-    if ($cropped !== false) {
-        imagedestroy($im);
-        $im = $cropped;
-    }
-    $w = imagesx($im); $h = imagesy($im);
-    $max = 800;
-    if ($w > $max || $h > $max) {
-        $scale = $max / max($w, $h);
-        $nw = (int)($w * $scale); $nh = (int)($h * $scale);
-        $resized = imagecreatetruecolor($nw, $nh);
-        imagealphablending($resized, false);
-        imagesavealpha($resized, true);
-        imagecopyresampled($resized, $im, 0, 0, 0, 0, $nw, $nh, $w, $h);
-        imagedestroy($im);
-        $im = $resized;
-    }
-    imagealphablending($im, false);
-    imagesavealpha($im, true);
-    imagepng($im, $tmpOut, 6);
-    imagedestroy($im);
+if ($im === false) {
+    @unlink($tmpOut);
+    http_response_code(500);
+    echo 'rembg returned an invalid PNG';
+    exit;
 }
+$cropped = @imagecropauto($im, IMG_CROP_TRANSPARENT);
+if ($cropped !== false) {
+    imagedestroy($im);
+    $im = $cropped;
+}
+$w = imagesx($im); $h = imagesy($im);
+$max = 800;
+if ($w > $max || $h > $max) {
+    $scale = $max / max($w, $h);
+    $nw = (int)($w * $scale); $nh = (int)($h * $scale);
+    $resized = imagecreatetruecolor($nw, $nh);
+    imagealphablending($resized, false);
+    imagesavealpha($resized, true);
+    imagecopyresampled($resized, $im, 0, 0, 0, 0, $nw, $nh, $w, $h);
+    imagedestroy($im);
+    $im = $resized;
+}
+imagealphablending($im, false);
+imagesavealpha($im, true);
+$saved = @imagepng($im, $tmpOut, 6);
+imagedestroy($im);
+// GD can report success after a short write, so decode the encoded file too.
+$encoded = $saved ? @imagecreatefrompng($tmpOut) : false;
+if ($encoded !== false) imagedestroy($encoded);
 
 // Atomic install: rename is atomic on the same filesystem, so any
 // concurrent reader either sees the old cached file or the new one,
 // never a half-written PNG.
-@rename($tmpOut, $cachePath);
+if ($encoded === false || !@chmod($tmpOut, 0644) || !@rename($tmpOut, $cachePath)) {
+    @unlink($tmpOut);
+    http_response_code(500);
+    echo 'could not publish cutout';
+    exit;
+}
 serve_png($cachePath);

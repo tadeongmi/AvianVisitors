@@ -72,3 +72,36 @@ code=$(curl -sS -o /tmp/archive-api-body -w '%{http_code}' -X POST \
 grep -q '"action":"purge-on"' /tmp/archive-api-body || fail "fixed action routing"
 
 echo 'archive api smoke: ok'
+
+code=$(curl -sS -o /tmp/archive-api-body -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -H 'X-Avian-Action: 1' \
+  --data '{"action":"stop"}' http://127.0.0.1:8899/avian/api/archive.php)
+[ "$code" = 200 ] || fail "stop action"
+grep -q '"action":"stop"' /tmp/archive-api-body || fail "stop action routing"
+
+for action in stop 'stop birdnet_recording.service'; do
+  code=$(curl -sS -o /tmp/archive-api-body -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' \
+    -H 'Origin: https://untrusted.example' --data "{\"action\":\"$action\"}" \
+    http://127.0.0.1:8899/avian/api/archive.php)
+  [ "$code" = 403 ] || fail "cross-origin stop accepted"
+done
+
+code=$(curl -sS -D /tmp/archive-api-headers -o /tmp/archive-api-body -w '%{http_code}' -X OPTIONS \
+  -H 'Origin: https://untrusted.example' -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: X-Avian-Action, Content-Type' \
+  http://127.0.0.1:8899/avian/api/archive.php)
+[ "$code" = 405 ] || fail "cross-origin preflight accepted"
+if grep -qi '^Access-Control-Allow-Origin:' /tmp/archive-api-headers; then fail 'cross-origin access allowed'; fi
+
+code=$(curl -sS -o /tmp/archive-api-body -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -H 'X-Avian-Action: 1' \
+  --data '{"action":"stop birdnet_recording.service"}' http://127.0.0.1:8899/avian/api/archive.php)
+[ "$code" = 400 ] || fail "stop accepts an arbitrary service"
+
+code=$(curl -sS -o /tmp/archive-api-body -w '%{http_code}' -X POST \
+  -H 'Host: public.example' -H 'Content-Type: application/json' -H 'X-Avian-Action: 1' \
+  --data '{"action":"stop"}' http://127.0.0.1:8899/avian/api/archive.php)
+[ "$code" = 401 ] || fail "public unauthenticated stop accepted"
+
+echo 'archive stop API smoke: ok'

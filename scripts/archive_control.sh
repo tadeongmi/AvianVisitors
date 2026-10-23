@@ -9,7 +9,7 @@ set -u -o pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-CONTROL_VERSION=1
+CONTROL_VERSION=2
 
 json_escape() {
   local value=${1-}
@@ -382,6 +382,7 @@ require_ready() {
 }
 
 action=${1:-status}
+[ "$#" -le 1 ] || fail "unexpected archive arguments"
 case "$action" in
   status)
     print_status
@@ -488,11 +489,16 @@ EOF
     ;;
   run)
     require_ready
-    if [ "$service_active" = active ] || [ "$service_active" = activating ]; then
+    if [ "$service_active" = active ] || [ "$service_active" = activating ] || [ "$service_active" = deactivating ]; then
       fail "an archive run is already active"
     fi
     systemctl --no-block start bird-archive.service >/dev/null 2>&1 || fail "could not start the archive"
     service_active=activating
+    print_status
+    ;;
+  stop)
+    systemctl --no-block stop bird-archive.service >/dev/null 2>&1 || fail "could not stop the archive"
+    service_active=$(systemctl is-active bird-archive.service 2>/dev/null || true)
     print_status
     ;;
   purge-on)

@@ -681,9 +681,32 @@ read_config_values() {
 
 action=${1:-version}
 case "$action" in
+  delete-recordings)
+    [ "$#" -eq 1 ] || fail "recording deletion takes no arguments"
+    [ -f "$repo_dir/scripts/delete_recordings.py" ] \
+      || fail "recording deletion is not installed"
+    exec /usr/sbin/runuser -u "$birdnet_user" -- \
+      env -i HOME="$birdnet_home" USER="$birdnet_user" PATH=/usr/bin:/bin \
+      /usr/bin/python3 -I "$repo_dir/scripts/delete_recordings.py" \
+      "$repo_dir/scripts/birds.db" "$birdnet_home/BirdSongs/Extracted/By_Date"
+    ;;
   version)
     [ "$#" -eq 1 ] || fail "unexpected arguments"
     printf '{"ok":true,"version":%s}\n' "$CONTROL_VERSION"
+    ;;
+  release)
+    [ "$#" -eq 1 ] || fail "release takes no arguments"
+    release=$(/usr/bin/timeout 5 /usr/sbin/runuser -u "$birdnet_user" -- \
+      env -i HOME="$birdnet_home" USER="$birdnet_user" PATH=/usr/bin:/bin \
+      GIT_ALLOW_PROTOCOL= GIT_TERMINAL_PROMPT=0 \
+      /bin/sh -c '
+        /usr/bin/git --no-optional-locks -C "$1" describe --tags --exact-match --match "v[0-9]*" 2>/dev/null ||
+        /usr/bin/git --no-optional-locks -C "$1" rev-parse --verify --short=12 HEAD
+      ' version "$repo_dir" 2>/dev/null) \
+      || fail "station version is unavailable"
+    [[ "$release" =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$ ]] \
+      || fail "station version is unavailable"
+    printf '{"ok":true,"release":"%s"}\n' "$release"
     ;;
   icecast-start-allowed)
     [ "$#" -eq 1 ] || fail "live audio start check takes no arguments"

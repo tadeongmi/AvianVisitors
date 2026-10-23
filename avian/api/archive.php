@@ -56,7 +56,7 @@ if (!is_array($body)) {
     archive_response(400, ['ok' => false, 'error' => 'bad json']);
 }
 $action = (string)($body['action'] ?? '');
-$allowed = ['install', 'enable', 'disable', 'run', 'purge-on', 'purge-off'];
+$allowed = ['install', 'enable', 'disable', 'run', 'stop', 'purge-on', 'purge-off'];
 if (!in_array($action, $allowed, true)) {
     archive_response(400, ['ok' => false, 'error' => 'unknown action']);
 }

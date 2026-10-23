@@ -5,6 +5,10 @@ $_POST = filter_input_array(INPUT_POST, FILTER_SANITIZE_FULL_SPECIAL_CHARS) ?: [
 
 require_once __DIR__ . '/common.php';
 ensure_authenticated();
+if (isset($_GET['delete'])) {
+    require_once __DIR__ . '/recording_delete.php';
+    delete_recording_request('species');
+}
 
 $home = get_home();
 
@@ -30,9 +34,8 @@ if (isset($_GET['diskcounts'])) {
     exit;
 }
 
-/* ---------- DB open (RO unless deleting) ---------- */
-$flags = isset($_GET['delete']) ? SQLITE3_OPEN_READWRITE : SQLITE3_OPEN_READONLY;
-$db   = new SQLite3(__DIR__ . '/birds.db', $flags);
+/* ---------- DB open ---------- */
+$db   = new SQLite3(__DIR__ . '/birds.db', SQLITE3_OPEN_READONLY);
 $db->busyTimeout(1000);
 
 /* Paths / lists */
@@ -114,34 +117,6 @@ if (isset($_GET['getcounts'])) {
   echo json_encode(['count' => $info['count'], 'files' => count($info['files'])]); exit;
 }
 
-/* ---------- delete ---------- */
-if (isset($_GET['delete'])) {
-  header('Content-Type: application/json');
-  if ($base === false) { http_response_code(500); exit(json_encode(['error' => 'Base directory not found'])); }
-  $species = htmlspecialchars_decode($_GET['delete'], ENT_QUOTES);
-  $info = collect_species_targets($db, $species, $home, $base);
-  $deleted = count($info['files']);
-  foreach ($info['dirs'] as $dir) {
-    if (exec("sudo rm -r $dir 2>&1", $output)) {
-      echo "Error - files deletion failed : " . implode(", ", $output) . "<br>";
-	  exit;
-    }
-  }
-  $del = $db->prepare('DELETE FROM detections WHERE Sci_Name = :name');
-  ensure_db_ok($del);
-  $del->bindValue(':name', $species, SQLITE3_TEXT);
-  $del->execute();
-  $lines_deleted = $db->changes();
-
-  if ($info['sci'] !== null && file_exists($confirm_file)) {
-    $identifier = $info['sci'];
-    $lines = array_values(array_filter($confirmed_species, fn($l) => $l !== $identifier));
-    file_put_contents($confirm_file, implode("\n", $lines) . (empty($lines) ? "" : "\n"));
-  }
-
-  echo json_encode(['lines' => $lines_deleted, 'files' => $deleted]); exit;
-}
-
 /* ---------- query species aggregates ---------- */
 $sql = <<<SQL
 SELECT Com_Name, Sci_Name, COUNT(*) AS Count, MAX(Confidence) AS MaxConfidence, MAX(Date) AS LastSeen
@@ -210,6 +185,7 @@ $result = $db->query($sql);
 
   $identifier_js = addslashes($identifier);
   $identifier_sci_js = addslashes($identifier_sci);
+  $delete_species_js = htmlspecialchars(json_encode($row['Sci_Name'].' + '.$row['Com_Name']), ENT_QUOTES, 'UTF-8');
 
   $confirm_cell = $is_confirmed
     ? "<img style='cursor:pointer;max-width:12px;max-height:12px' src='images/check.svg' onclick=\"toggleSpecies('confirmed','{$identifier_sci_js}','del')\">"
@@ -243,7 +219,7 @@ $result = $db->query($sql);
      . "<td data-sort='".($is_confirmed?0:1)."'>".$confirm_cell."</td>"
      . "<td data-sort='".($is_excluded?0:1)."'>".$excl_cell."</td>"
      . "<td data-sort='".($is_whitelisted?0:1)."'>".$white_cell."</td>"
-     . "<td><img style='cursor:pointer;max-width:20px' src='images/delete.svg' onclick=\"deleteSpecies('".addslashes($row['Sci_Name'])." + ".addslashes($row['Com_Name'])."')\"></td>"
+     . "<td><img style='cursor:pointer;max-width:20px' src='images/delete.svg' onclick='deleteSpecies(".$delete_species_js.")'></td>"
      . "</tr>";
 } ?>
     </tbody>
@@ -251,6 +227,7 @@ $result = $db->query($sql);
 </div>
 <script src="static/Chart.bundle.js"></script>
 <script src="static/generateMiniGraph.js"></script>
+<script src="static/recording-delete.js"></script>
 <script>
 const scriptsBase = 'scripts/';
 const sfThresh = <?php echo json_encode($sf_thresh, JSON_UNESCAPED_UNICODE); ?>;
@@ -334,17 +311,16 @@ function toggleSpecies(list, species, action) {
   get(scriptsBase + 'species_tools.php?toggle=' + list + '&species=' + encodeURIComponent(species) + '&action=' + action)
     .then(t => { if (t.trim() === 'OK') location.reload(); });
 }
-function deleteSpecies(species) {
-  let parts = species.split(' + '); let sci_species = parts[0]; let com_species = parts[1];
-  get(scriptsBase + 'species_tools.php?getcounts=' + encodeURIComponent(sci_species)).then(t => {
-    let info; try { info = JSON.parse(t); } catch { alert('Could not parse count response'); return; }
-    if (!confirm('Delete ' + info.count + ' detections and local audio and png files for ' + com_species + '?')) return;
-    get(scriptsBase + 'species_tools.php?delete=' + encodeURIComponent(sci_species)).then(t2 => {
-      try { const res = JSON.parse(t2); alert('Deleted ' + res.lines + ' detections and ' + res.files + ' files for ' + com_species); }
-      catch { alert('Deletion complete'); }
-      location.reload();
-    });
-  });
+async function deleteSpecies(species) {
+  const parts = species.split(' + ');
+  if (!confirm('Delete all detections and local recordings for ' + parts[1] + '?')) return;
+  try {
+    const result = await deleteRecordingRequest(scriptsBase + 'species_tools.php?delete=1', {species: parts[0]});
+    alert('Deleted ' + result.lines + ' detections and ' + result.files + ' files for ' + parts[1]);
+    location.reload();
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 /* ---------- Sorting with persistence ---------- */

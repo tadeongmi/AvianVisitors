@@ -54,8 +54,15 @@ case "$1" in
     echo inactive >"$state/timer-active"
     ;;
   --no-block)
-    [ "$2" = start ] || exit 2
-    echo activating >"$state/service-active"
+    [ "$3" = bird-archive.service ] || exit 2
+    case "$2" in
+      start) echo activating >"$state/service-active" ;;
+      stop)
+        [ ! -e "$state/stop-fails" ] || exit 1
+        echo deactivating >"$state/service-active"
+        ;;
+      *) exit 2 ;;
+    esac
     ;;
   *) exit 2 ;;
 esac
@@ -217,5 +224,19 @@ grep -q '^PURGE=false$' /home/bird/bird-archive/archive.conf || fail "cleanup re
 [ "$(wc -l <<<"$disabled_json")" -eq 1 ] || fail "systemctl output contaminated disable JSON"
 if $control purge-on >/dev/null 2>&1; then fail "cleanup enabled while nightly archive was off"; fi
 if $control unknown >/dev/null 2>&1; then fail "unknown action accepted"; fi
+
+# Stopping an in-flight service must not need working backup dependencies.
+rm /usr/local/bin/rclone /usr/local/bin/sqlite3
+rm -f /usr/bin/sqlite3
+rm /home/bird/.config/rclone/rclone.conf
+echo enabled >/run/archive-test/enabled
+echo activating >/run/archive-test/service-active
+stopped_json=$($control stop)
+grep -q '"active":"deactivating"' <<<"$stopped_json" || fail "stop hid pending shutdown"
+grep -q '"enabled":"enabled"' <<<"$stopped_json" || fail "stop changed schedule"
+grep -q '"rclone":false,"sqlite3":false' <<<"$stopped_json" || fail "stop did not cover missing dependencies"
+if $control stop birdnet_recording.service >/dev/null 2>&1; then fail "stop accepted extra arguments"; fi
+touch /run/archive-test/stop-fails
+if $control stop >/dev/null 2>&1; then fail "stop failure was ignored"; fi
 
 echo 'archive control smoke: ok'

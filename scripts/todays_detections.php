@@ -207,7 +207,7 @@ if(isset($_GET['ajax_detections']) && $_GET['ajax_detections'] == "true"  ) {
         <?php if(isset($_GET['display_limit']) && is_numeric($_GET['display_limit'])){ ?>
           <tr class="relative" id="<?php echo $iterations; ?>">
           <td class="relative">
-            <img style='cursor:pointer;right:45px' src='images/delete.svg' onclick='deleteDetection("<?php echo $filename_formatted; ?>")' class="copyimage" width=25 title='Delete Detection'>
+            <img style='cursor:pointer;right:45px' src='images/delete.svg' onclick='deleteDetection(<?php echo htmlspecialchars(json_encode($filename_formatted), ENT_QUOTES, "UTF-8"); ?>)' class="copyimage" width=25 title='Delete Detection'>
             <a target="_blank" href="index.php?filename=<?php echo $todaytable['File_Name']; ?>"><img class="copyimage" title="Open in new tab" width=25 src="images/copy.png"></a>
         
             
@@ -329,26 +329,9 @@ if (get_included_files()[0] === __FILE__) {
   <script src="static/dialog-polyfill.js"></script>
   <script src="static/Chart.bundle.js"></script>
   <script src="static/chartjs-plugin-trendline.min.js"></script>
+  <script src="static/recording-delete.js"></script>
   
   <script>
-    function deleteDetection(filename,copylink=false) {
-    if (confirm("Are you sure you want to delete this detection from the database?") == true) {
-      const xhttp = new XMLHttpRequest();
-      xhttp.onload = function() {
-        if(this.responseText == "OK"){
-          if(copylink == true) {
-            window.top.close();
-          } else {
-            location.reload();
-          }
-        } else {
-          alert("Database busy.")
-        }
-      }
-      xhttp.open("GET", "play.php?deletefile="+filename, true);
-      xhttp.send();
-    }
-  }
 
     var last_photo_link;
   var dialog = document.querySelector('dialog');
