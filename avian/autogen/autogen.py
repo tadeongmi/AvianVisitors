@@ -145,12 +145,22 @@ def main() -> int:
         log("no GEMINI_API_KEY in birdnet.conf; skipping")
         return 0
 
-    lock = LOCK.open("r+")
+    # Same protocol as generate_one.py: hold the generation lock throughout,
+    # invalidate the included-art content revision before replacing any pixels,
+    # and hand the held lock to build_masks.py, which would otherwise wait on it.
+    import build_masks
+    lock = build_masks.open_generation_lock(LOCK)
     try:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         log("generation busy (Atlas button or updater); next run")
         return 0
+    revision_state = build_masks.open_art_revision_state(os.fstat(lock.fileno()).st_gid)
+    if revision_state is None:
+        log("illustration content revision state is missing; is the station fully installed?")
+        return 1
+    invalidated = False
+    mask_env = dict(os.environ, AVIAN_GENERATION_LOCK_FD=str(lock.fileno()))
 
     import pregen
     from rembg import new_session
@@ -192,12 +202,18 @@ def main() -> int:
                         break
                     log(f"  {fname} attempt {attempt}: bird runs off the frame ({e:.4f}), retrying")
                     time.sleep(6)
+                if not invalidated:
+                    # Readers stay closed until build_masks commits matching tables.
+                    build_masks.invalidate_content_revision(revision_state)
+                    invalidated = True
                 (RAW / fname).write_bytes(best[1])
                 plain_cut(RAW / fname, ILL / fname, sess)
                 made.append(fname[:-4])
                 log(f"  [ok] {fname} (edge {best[0]:.4f})")
                 time.sleep(6)
-            subprocess.run([sys.executable, str(HERE / "build_masks.py"), "--add", *made], check=True)
+            subprocess.run([sys.executable, str(HERE / "build_masks.py"), "--add", *made], check=True,
+                           env=mask_env, pass_fds=(lock.fileno(),))
+            invalidated = False   # build_masks published a fresh revision
             state["made"].append(sci)
         except Exception as exc:  # noqa: BLE001 - keep going with the next species
             state["fails"][sci] = state["fails"].get(sci, 0) + 1
