@@ -56,7 +56,9 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq python3-venv python3-dev
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install -q --upgrade pip
-"$VENV/bin/pip" install -q playwright
+# shoot.py composes the PNG itself with Pillow (same pin as
+# frame/requirements-shoot.txt).
+"$VENV/bin/pip" install -q playwright "Pillow>=9.2,<12"
 
 say "Providing a Chromium for Playwright"
 # Playwright has no Chromium build for every ARM64 distribution, and
