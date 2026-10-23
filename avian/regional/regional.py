@@ -327,8 +327,11 @@ def export(out_dir: Path, *, draft: bool, cfg: dict, birds: list[dict], curation
                         raise SystemExit(f"{b['slug']} changed while exporting; run export again")
                     for f in pose_files(b["slug"]):
                         shutil.copy2(f, stage / f.name)
+        # The staged copy is ours alone; bundle_export.py accepts a private
+        # lock only at mode 0600.
         private_lock = tmp / "lock"
-        private_lock.touch()
+        private_lock.touch(mode=0o600)
+        os.chmod(private_lock, 0o600)
         raw = tmp / "raw.zip"
         # The same trusted taxonomy export.php hands the exporter.
         catalogs = [c for c in (CATALOG, HERE / "bundle-taxonomy-v1.json") if c.is_file()]
@@ -340,7 +343,8 @@ def export(out_dir: Path, *, draft: bool, cfg: dict, birds: list[dict], curation
             raise SystemExit("bundle_export.py failed: " + (run.stdout + run.stderr).strip()[-600:])
         patched = tmp / name
         manifest = patch_manifest(raw, patched, cfg)
-        check = subprocess.run([sys.executable, "-I", str(HERE / "bundle_validate.py"), str(patched)],
+        # Not -I: the validator imports its sibling modules from avian/scripts.
+        check = subprocess.run([sys.executable, str(HERE / "bundle_validate.py"), str(patched)],
                                capture_output=True, text=True)
         verdict = json.loads(check.stdout or "{}")
         if check.returncode or verdict.get("ok") is not True:
