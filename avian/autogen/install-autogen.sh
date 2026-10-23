@@ -73,6 +73,20 @@ UNITEOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now avian-autogen.timer
 
+say "Installing the avian-regional review command"
+# Review decisions live in autogen's state dir, so the tool runs as the web user.
+sudo tee /usr/local/bin/avian-regional >/dev/null <<WRAPEOF
+#!/usr/bin/env bash
+# Review this station's own illustrations and export them as a catalog bundle.
+# See avian/regional/README.md.
+set -euo pipefail
+if [ "\$(id -un)" != "$WEB_USER" ]; then
+  exec sudo -u "$WEB_USER" -- "\$0" "\$@"
+fi
+exec "$VENV/bin/python" "$STATION_DIR/avian/regional/regional.py" "\$@"
+WRAPEOF
+sudo chmod 0755 /usr/local/bin/avian-regional
+
 if ! sudo grep -qE '^GEMINI_API_KEY=.+' "$STATION_DIR/birdnet.conf"; then
   echo "note: no GEMINI_API_KEY in birdnet.conf yet; the timer idles until one is set"
 fi

@@ -28,6 +28,7 @@ REFS = BASE / "avian/assets/references"
 DB = BASE / "scripts/birds.db"
 CONF = BASE / "birdnet.conf"
 STATE = Path(os.environ.get("STATE_DIRECTORY", "/var/lib/avian-autogen")) / "state.json"
+CURATION = STATE.parent / "curation.json"   # review decisions, see avian/regional
 LOCK = Path("/run/lock/avian-generation.lock")
 DAILY_CAP = 10       # species per day (~2-6 Gemini calls each, ~$0.04 per call)
 MAX_FAILS = 3        # attempts per species per day before giving up until tomorrow
@@ -119,8 +120,23 @@ def missing_species() -> list[tuple[str, str, list[int]]]:
     return out
 
 
+def rejected_species() -> tuple[list[tuple[str, str, list[int]]], dict[str, str]]:
+    """Birds rejected in review (avian/regional) whose rejected images are still
+    on disk: re-render both poses, with the reviewer's note added to the prompt."""
+    sys.path.insert(0, str(BASE / "avian/regional"))
+    import regional
+    try:
+        curation = regional.load_curation(CURATION)
+    except SystemExit as exc:
+        log(f"ignoring review state: {exc}")
+        return [], {}
+    queue = regional.rerender_queue(curation, ILL)
+    return [(r["sci"], r["com"], [1, 2]) for r in queue], {r["sci"]: r["note"] for r in queue}
+
+
 def main() -> int:
-    todo = missing_species()
+    rejected, review_notes = rejected_species()
+    todo = missing_species() + rejected
     if not todo:
         return 0
     state = load_state()
@@ -165,9 +181,10 @@ def main() -> int:
                     style = ILL / ("turdus-migratorius.png" if pose == 1 else "turdus-migratorius-2.png")
                 best = None
                 for attempt in range(1, TRIES + 1):
+                    note = " ".join(n for n in (notes.get(sci), review_notes.get(sci)) if n) or None
                     png = pregen.gen_one(key, prompt, sci, com, pose, positive_ref=pos_ref,
                                          anti_ref=anti, anti_ref_key=anti_key if anti else None,
-                                         species_note=notes.get(sci), style_ref=style)
+                                         species_note=note, style_ref=style)
                     e = edge_ink(png)
                     if best is None or e < best[0]:
                         best = (e, png)

@@ -1,0 +1,16 @@
+{
+  "name": "Japanese Woodblock - Río de la Plata",
+  "description": "Birds heard at a BirdNET-Pi station in La Lucila, Buenos Aires, on the Río de la Plata shore.",
+  "style_name": "Japanese Woodblock",
+  "style_category": "Traditional",
+  "region_label": "Río de la Plata",
+  "region_codes": ["AR-B", "AR-C"],
+  "region_group": "South America",
+  "license": "CC-BY-NC-SA-4.0",
+  "creator": "tadeongmi",
+  "source_url": "https://github.com/tadeongmi/AvianVisitors",
+  "method": "generated",
+  "model": "gemini-2.5-flash-image",
+  "cover": "Furnarius rufus",
+  "file_name": "japanese-woodblock-rio-de-la-plata.zip"
+}
