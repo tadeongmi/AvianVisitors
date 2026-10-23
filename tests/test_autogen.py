@@ -71,6 +71,31 @@ class AutogenTest(unittest.TestCase):
             ("Guira guira", "Pirincho", [2]),
         ])
 
+    def test_anti_reference_is_fetched_once_and_covers_pygochelidon(self) -> None:
+        import sys
+        sys.path.insert(0, str(MODULE.HERE))
+        import pregen
+        photo = io.BytesIO()
+        Image.new("RGB", (20, 20), (180, 90, 40)).save(photo, "PNG")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(MODULE, "REFS", Path(tmp)), \
+                mock.patch.object(pregen, "fetch_wikipedia_thumb", return_value=(photo.getvalue(), ".png")) as fetch:
+            key, path = MODULE.anti_reference(pregen, "Pygochelidon cyanoleuca")
+            self.assertEqual((key, path), ("barnswallow", Path(tmp) / "_anti_barnswallow.jpg"))
+            self.assertEqual(Image.open(path).format, "JPEG")
+            self.assertEqual(MODULE.anti_reference(pregen, "Tachycineta leucopyga"), (key, path))
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(fetch.call_args.args, ("Hirundo rustica", "Barn Swallow"))
+            self.assertEqual(MODULE.anti_reference(pregen, "Turdus rufiventris"), (None, None))
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["_anti_barnswallow.jpg"])
+
+    def test_failed_anti_reference_fetch_renders_without_it(self) -> None:
+        import sys
+        sys.path.insert(0, str(MODULE.HERE))
+        import pregen
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(MODULE, "REFS", Path(tmp)), \
+                mock.patch.object(pregen, "fetch_wikipedia_thumb", return_value=None):
+            self.assertEqual(MODULE.anti_reference(pregen, "Tachycineta leucorrhoa"), (None, None))
+
     def test_state_resets_each_day(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "state.json"

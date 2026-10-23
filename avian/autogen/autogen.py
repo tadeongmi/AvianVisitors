@@ -34,6 +34,14 @@ DAILY_CAP = 10       # species per day (~2-6 Gemini calls each, ~$0.04 per call)
 MAX_FAILS = 3        # attempts per species per day before giving up until tomorrow
 EDGE_OK = 0.002      # fraction of frame-edge pixels that may carry ink
 TRIES = 3
+# Swallow genera pregen's SWALLOW_GENERA lacks, which drift to Barn Swallow just
+# the same (Blue-and-white Swallow, for one).
+EXTRA_SWALLOW_GENERA = {"Pygochelidon", "Alopochelidon", "Notiochelidon", "Orochelidon"}
+# pregen tells the model not to copy the Barn Swallow's blue-black back, but the
+# Chilean and Blue-and-white swallows (and the martins) have exactly that back.
+# Name only the traits that are wrong for them.
+BARN_SWALLOW_DO_NOT_COPY = ("its rufous-chestnut forehead and throat, its buff-orange underparts, "
+                            "or its long, deeply forked outer tail streamers")
 
 sys.path.insert(0, str(HERE))
 
@@ -120,6 +128,40 @@ def missing_species() -> list[tuple[str, str, list[int]]]:
     return out
 
 
+def anti_reference(pregen, sci: str) -> tuple[str | None, Path | None]:
+    """The lookalike photo to attach as IMAGE 2, fetching it on first use.
+
+    pregen expects avian/assets/references/_anti_<key>.jpg but nothing ships or
+    downloads it, so without this the anti-reference never reaches the model."""
+    key = pregen.select_anti_ref_key(sci)
+    if key is None and sci.split()[0] in EXTRA_SWALLOW_GENERA:
+        key = "barnswallow"
+    if key is None:
+        return None, None
+    path = pregen.load_anti_ref(REFS, key)
+    if path is None:
+        from PIL import Image
+        info = pregen.ANTI_REFS[key]
+        scratch = REFS / ".anti-fetch"
+        try:
+            got = pregen.ensure_reference(scratch, key, info["sci_name"], info["common_name"])
+            if got:
+                dst = REFS / f"_anti_{key}.jpg"
+                tmp = dst.with_name("." + dst.name + ".tmp")
+                Image.open(got).convert("RGB").save(tmp, "JPEG", quality=90)
+                tmp.replace(dst)
+                log(f"  fetched the {info['common_name']} anti-reference")
+                path = dst
+        except Exception as exc:  # noqa: BLE001 - render without it rather than fail the bird
+            log(f"  could not fetch the {key} anti-reference: {exc}")
+        finally:
+            for f in scratch.glob("*"):
+                f.unlink()
+            if scratch.exists():
+                scratch.rmdir()
+    return (key, path) if path else (None, None)
+
+
 def rejected_species() -> tuple[list[tuple[str, str, list[int]]], dict[str, str]]:
     """Birds rejected in review (avian/regional) whose rejected images are still
     on disk: re-render both poses, with the reviewer's note added to the prompt."""
@@ -168,6 +210,7 @@ def main() -> int:
 
     import pregen
     from rembg import new_session
+    pregen.ANTI_REFS["barnswallow"]["do_not_copy"] = BARN_SWALLOW_DO_NOT_COPY
     prompt = pregen.load_prompt(HERE / "prompt.template.md")
     notes = pregen.load_species_notes(HERE / "species-notes.json")
     sess = None
@@ -190,8 +233,7 @@ def main() -> int:
         log(f"generating {sci} ({com}) poses {poses}")
         try:
             pos_ref = pregen.ensure_reference(REFS, slug, sci, com)
-            anti_key = pregen.select_anti_ref_key(sci)
-            anti = pregen.load_anti_ref(REFS, anti_key) if anti_key else None
+            anti_key, anti = anti_reference(pregen, sci)
             if sess is None:
                 sess = new_session("birefnet-general")
             made = []
